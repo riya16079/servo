@@ -8,14 +8,13 @@
 
 use cssparser::{AtRuleParser, Parser, QualifiedRuleParser, RuleListParser};
 use cssparser::{DeclarationListParser, DeclarationParser, parse_one_rule};
-use parking_lot::RwLock;
-use parser::{ParserContext, ParserContextExtraData, log_css_error};
+use parser::{ParserContext, log_css_error};
 use properties::{Importance, PropertyDeclaration, PropertyDeclarationBlock, PropertyId};
-use properties::{PropertyDeclarationId, LonghandId, DeclaredValue};
+use properties::{PropertyDeclarationId, LonghandId, ParsedDeclaration};
 use properties::LonghandIdSet;
-use properties::PropertyDeclarationParseResult;
 use properties::animated_properties::TransitionProperty;
 use properties::longhands::transition_timing_function::single_value::SpecifiedValue as SpecifiedTimingFunction;
+use shared_lock::{SharedRwLock, SharedRwLockReadGuard, Locked, ToCssWithGuard};
 use std::fmt;
 use std::sync::Arc;
 use style_traits::ToCss;
@@ -71,8 +70,7 @@ impl KeyframePercentage {
 
 /// A keyframes selector is a list of percentages or from/to symbols, which are
 /// converted at parse time to percentages.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "servo", derive(HeapSizeOf))]
+#[derive(Debug, PartialEq)]
 pub struct KeyframeSelector(Vec<KeyframePercentage>);
 impl KeyframeSelector {
     /// Return the list of percentages this selector contains.
@@ -94,8 +92,7 @@ impl KeyframeSelector {
 }
 
 /// A keyframe.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "servo", derive(HeapSizeOf))]
+#[derive(Debug)]
 pub struct Keyframe {
     /// The selector this keyframe was specified from.
     pub selector: KeyframeSelector,
@@ -104,12 +101,12 @@ pub struct Keyframe {
     ///
     /// Note that `!important` rules in keyframes don't apply, but we keep this
     /// `Arc` just for convenience.
-    #[cfg_attr(feature = "servo", ignore_heap_size_of = "Arc")]
-    pub block: Arc<RwLock<PropertyDeclarationBlock>>,
+    pub block: Arc<Locked<PropertyDeclarationBlock>>,
 }
 
-impl ToCss for Keyframe {
-    fn to_css<W>(&self, dest: &mut W) -> fmt::Result where W: fmt::Write {
+impl ToCssWithGuard for Keyframe {
+    fn to_css<W>(&self, guard: &SharedRwLockReadGuard, dest: &mut W) -> fmt::Result
+    where W: fmt::Write {
         let mut iter = self.selector.percentages().iter();
         try!(iter.next().unwrap().to_css(dest));
         for percentage in iter {
@@ -117,7 +114,7 @@ impl ToCss for Keyframe {
             try!(percentage.to_css(dest));
         }
         try!(dest.write_str(" { "));
-        try!(self.block.read().to_css(dest));
+        try!(self.block.read_with(guard).to_css(dest));
         try!(dest.write_str(" }"));
         Ok(())
     }
@@ -126,19 +123,17 @@ impl ToCss for Keyframe {
 
 impl Keyframe {
     /// Parse a CSS keyframe.
-    pub fn parse(css: &str,
-                 parent_stylesheet: &Stylesheet,
-                 extra_data: ParserContextExtraData)
-                 -> Result<Arc<RwLock<Self>>, ()> {
-        let error_reporter = Box::new(MemoryHoleReporter);
-        let context = ParserContext::new_with_extra_data(parent_stylesheet.origin,
-                                                         &parent_stylesheet.base_url,
-                                                         error_reporter,
-                                                         extra_data);
+    pub fn parse(css: &str, parent_stylesheet: &Stylesheet)
+                 -> Result<Arc<Locked<Self>>, ()> {
+        let error_reporter = MemoryHoleReporter;
+        let context = ParserContext::new(parent_stylesheet.origin,
+                                         &parent_stylesheet.url_data,
+                                         &error_reporter);
         let mut input = Parser::new(css);
 
         let mut rule_parser = KeyframeListParser {
             context: &context,
+            shared_lock: &parent_stylesheet.shared_lock,
         };
         parse_one_rule(&mut input, &mut rule_parser)
     }
@@ -149,14 +144,14 @@ impl Keyframe {
 /// declarations to apply.
 ///
 /// TODO: Find a better name for this?
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
 pub enum KeyframesStepValue {
     /// A step formed by a declaration block specified by the CSS.
     Declarations {
         /// The declaration block per se.
         #[cfg_attr(feature = "servo", ignore_heap_size_of = "Arc")]
-        block: Arc<RwLock<PropertyDeclarationBlock>>
+        block: Arc<Locked<PropertyDeclarationBlock>>
     },
     /// A synthetic step computed from the current computed values at the time
     /// of the animation.
@@ -164,7 +159,7 @@ pub enum KeyframesStepValue {
 }
 
 /// A single step from a keyframe animation.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
 pub struct KeyframesStep {
     /// The percentage of the animation duration when this step starts.
@@ -182,10 +177,11 @@ pub struct KeyframesStep {
 impl KeyframesStep {
     #[inline]
     fn new(percentage: KeyframePercentage,
-           value: KeyframesStepValue) -> Self {
+           value: KeyframesStepValue,
+           guard: &SharedRwLockReadGuard) -> Self {
         let declared_timing_function = match value {
             KeyframesStepValue::Declarations { ref block } => {
-                block.read().declarations.iter().any(|&(ref prop_decl, _)| {
+                block.read_with(guard).declarations().iter().any(|&(ref prop_decl, _)| {
                     match *prop_decl {
                         PropertyDeclaration::AnimationTimingFunction(..) => true,
                         _ => false,
@@ -203,25 +199,23 @@ impl KeyframesStep {
     }
 
     /// Return specified TransitionTimingFunction if this KeyframesSteps has 'animation-timing-function'.
-    pub fn get_animation_timing_function(&self) -> Option<SpecifiedTimingFunction> {
+    pub fn get_animation_timing_function(&self, guard: &SharedRwLockReadGuard)
+                                         -> Option<SpecifiedTimingFunction> {
         if !self.declared_timing_function {
             return None;
         }
         match self.value {
             KeyframesStepValue::Declarations { ref block } => {
-                let guard = block.read();
+                let guard = block.read_with(guard);
                 let &(ref declaration, _) =
                     guard.get(PropertyDeclarationId::Longhand(LonghandId::AnimationTimingFunction)).unwrap();
                 match *declaration {
                     PropertyDeclaration::AnimationTimingFunction(ref value) => {
-                        match *value {
-                            DeclaredValue::Value(ref value) => {
-                                // Use the first value.
-                                Some(value.0[0])
-                            },
-                            _ => None,
-                        }
+                        // Use the first value.
+                        Some(value.0[0])
                     },
+                    PropertyDeclaration::CSSWideKeyword(..) => None,
+                    PropertyDeclaration::WithVariables(..) => None,
                     _ => panic!(),
                 }
             },
@@ -236,7 +230,7 @@ impl KeyframesStep {
 /// of keyframes, in order.
 ///
 /// It only takes into account animable properties.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
 pub struct KeyframesAnimation {
     /// The difference steps of the animation.
@@ -246,14 +240,16 @@ pub struct KeyframesAnimation {
 }
 
 /// Get all the animated properties in a keyframes animation.
-fn get_animated_properties(keyframes: &[Arc<RwLock<Keyframe>>]) -> Vec<TransitionProperty> {
+fn get_animated_properties(keyframes: &[Arc<Locked<Keyframe>>], guard: &SharedRwLockReadGuard)
+                           -> Vec<TransitionProperty> {
     let mut ret = vec![];
     let mut seen = LonghandIdSet::new();
     // NB: declarations are already deduplicated, so we don't have to check for
     // it here.
     for keyframe in keyframes {
-        let keyframe = keyframe.read();
-        for &(ref declaration, importance) in keyframe.block.read().declarations.iter() {
+        let keyframe = keyframe.read_with(&guard);
+        let block = keyframe.block.read_with(guard);
+        for &(ref declaration, importance) in block.declarations().iter() {
             assert!(!importance.important());
 
             if let Some(property) = TransitionProperty::from_declaration(declaration) {
@@ -277,7 +273,8 @@ impl KeyframesAnimation {
     ///
     /// Otherwise, this will compute and sort the steps used for the animation,
     /// and return the animation object.
-    pub fn from_keyframes(keyframes: &[Arc<RwLock<Keyframe>>]) -> Self {
+    pub fn from_keyframes(keyframes: &[Arc<Locked<Keyframe>>], guard: &SharedRwLockReadGuard)
+                          -> Self {
         let mut result = KeyframesAnimation {
             steps: vec![],
             properties_changed: vec![],
@@ -287,17 +284,17 @@ impl KeyframesAnimation {
             return result;
         }
 
-        result.properties_changed = get_animated_properties(keyframes);
+        result.properties_changed = get_animated_properties(keyframes, guard);
         if result.properties_changed.is_empty() {
             return result;
         }
 
         for keyframe in keyframes {
-            let keyframe = keyframe.read();
+            let keyframe = keyframe.read_with(&guard);
             for percentage in keyframe.selector.0.iter() {
                 result.steps.push(KeyframesStep::new(*percentage, KeyframesStepValue::Declarations {
                     block: keyframe.block.clone(),
-                }));
+                }, guard));
             }
         }
 
@@ -307,12 +304,14 @@ impl KeyframesAnimation {
         // Prepend autogenerated keyframes if appropriate.
         if result.steps[0].start_percentage.0 != 0. {
             result.steps.insert(0, KeyframesStep::new(KeyframePercentage::new(0.),
-                                                      KeyframesStepValue::ComputedValues));
+                                                      KeyframesStepValue::ComputedValues,
+                                                      guard));
         }
 
         if result.steps.last().unwrap().start_percentage.0 != 1. {
             result.steps.push(KeyframesStep::new(KeyframePercentage::new(1.),
-                                                 KeyframesStepValue::ComputedValues));
+                                                 KeyframesStepValue::ComputedValues,
+                                                 guard));
         }
 
         result
@@ -329,24 +328,27 @@ impl KeyframesAnimation {
 /// }
 struct KeyframeListParser<'a> {
     context: &'a ParserContext<'a>,
+    shared_lock: &'a SharedRwLock,
 }
 
 /// Parses a keyframe list from CSS input.
-pub fn parse_keyframe_list(context: &ParserContext, input: &mut Parser) -> Vec<Arc<RwLock<Keyframe>>> {
-    RuleListParser::new_for_nested_rule(input, KeyframeListParser { context: context })
-        .filter_map(Result::ok)
-        .collect()
+pub fn parse_keyframe_list(context: &ParserContext, input: &mut Parser, shared_lock: &SharedRwLock)
+                           -> Vec<Arc<Locked<Keyframe>>> {
+    RuleListParser::new_for_nested_rule(input, KeyframeListParser {
+        context: context,
+        shared_lock: shared_lock,
+    }).filter_map(Result::ok).collect()
 }
 
 enum Void {}
 impl<'a> AtRuleParser for KeyframeListParser<'a> {
     type Prelude = Void;
-    type AtRule = Arc<RwLock<Keyframe>>;
+    type AtRule = Arc<Locked<Keyframe>>;
 }
 
 impl<'a> QualifiedRuleParser for KeyframeListParser<'a> {
     type Prelude = KeyframeSelector;
-    type QualifiedRule = Arc<RwLock<Keyframe>>;
+    type QualifiedRule = Arc<Locked<Keyframe>>;
 
     fn parse_prelude(&mut self, input: &mut Parser) -> Result<Self::Prelude, ()> {
         let start = input.position();
@@ -364,12 +366,12 @@ impl<'a> QualifiedRuleParser for KeyframeListParser<'a> {
                    -> Result<Self::QualifiedRule, ()> {
         let parser = KeyframeDeclarationParser {
             context: self.context,
-            declarations: vec![],
         };
         let mut iter = DeclarationListParser::new(input, parser);
+        let mut block = PropertyDeclarationBlock::new();
         while let Some(declaration) = iter.next() {
             match declaration {
-                Ok(_) => (),
+                Ok(parsed) => parsed.expand_push_into(&mut block, Importance::Normal),
                 Err(range) => {
                     let pos = range.start;
                     let message = format!("Unsupported keyframe property declaration: '{}'",
@@ -379,47 +381,38 @@ impl<'a> QualifiedRuleParser for KeyframeListParser<'a> {
             }
             // `parse_important` is not called here, `!important` is not allowed in keyframe blocks.
         }
-        Ok(Arc::new(RwLock::new(Keyframe {
+        Ok(Arc::new(self.shared_lock.wrap(Keyframe {
             selector: prelude,
-            block: Arc::new(RwLock::new(PropertyDeclarationBlock {
-                declarations: iter.parser.declarations,
-                important_count: 0,
-            })),
+            block: Arc::new(self.shared_lock.wrap(block)),
         })))
     }
 }
 
 struct KeyframeDeclarationParser<'a, 'b: 'a> {
     context: &'a ParserContext<'b>,
-    declarations: Vec<(PropertyDeclaration, Importance)>
 }
 
 /// Default methods reject all at rules.
 impl<'a, 'b> AtRuleParser for KeyframeDeclarationParser<'a, 'b> {
     type Prelude = ();
-    type AtRule = ();
+    type AtRule = ParsedDeclaration;
 }
 
 impl<'a, 'b> DeclarationParser for KeyframeDeclarationParser<'a, 'b> {
-    /// We parse rules directly into the declarations object
-    type Declaration = ();
+    type Declaration = ParsedDeclaration;
 
-    fn parse_value(&mut self, name: &str, input: &mut Parser) -> Result<(), ()> {
+    fn parse_value(&mut self, name: &str, input: &mut Parser) -> Result<ParsedDeclaration, ()> {
         let id = try!(PropertyId::parse(name.into()));
-        let old_len = self.declarations.len();
-        match PropertyDeclaration::parse(id, self.context, input, &mut self.declarations, true) {
-            PropertyDeclarationParseResult::ValidOrIgnoredDeclaration => {}
-            _ => {
-                self.declarations.truncate(old_len);
-                return Err(());
+        match ParsedDeclaration::parse(id, self.context, input, true) {
+            Ok(parsed) => {
+                // In case there is still unparsed text in the declaration, we should roll back.
+                if !input.is_exhausted() {
+                    Err(())
+                } else {
+                    Ok(parsed)
+                }
             }
-        }
-        // In case there is still unparsed text in the declaration, we should roll back.
-        if !input.is_exhausted() {
-            self.declarations.truncate(old_len);
-            Err(())
-        } else {
-            Ok(())
+            Err(_) => Err(())
         }
     }
 }

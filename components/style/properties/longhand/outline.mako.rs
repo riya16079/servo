@@ -10,12 +10,12 @@
                          additional_methods=[Method("outline_has_nonzero_width", "bool")]) %>
 
 // TODO(pcwalton): `invert`
-${helpers.predefined_type("outline-color", "CSSColor", "::cssparser::Color::CurrentColor",
+${helpers.predefined_type("outline-color", "CSSColor", "computed::CSSColor::CurrentColor",
                           initial_specified_value="specified::CSSColor::currentcolor()",
-                          animatable=True, complex_color=True, need_clone=True,
+                          animation_type="normal", complex_color=True, need_clone=True,
                           spec="https://drafts.csswg.org/css-ui/#propdef-outline-color")}
 
-<%helpers:longhand name="outline-style" need_clone="True" animatable="False"
+<%helpers:longhand name="outline-style" need_clone="True" animation_type="none"
                    spec="https://drafts.csswg.org/css-ui/#propdef-outline-style">
 
     use std::fmt;
@@ -53,8 +53,9 @@ ${helpers.predefined_type("outline-color", "CSSColor", "::cssparser::Color::Curr
         SpecifiedValue::parse(context, input)
             .and_then(|result| {
                 if let Either::Second(BorderStyle::hidden) = result {
-                    // The outline-style property accepts the same values as border-style,
-                    // except that 'hidden' is not a legal outline style.
+                    // The outline-style property accepts the same values as
+                    // border-style, except that 'hidden' is not a legal outline
+                    // style.
                     Err(())
                 } else {
                     Ok(result)
@@ -63,7 +64,7 @@ ${helpers.predefined_type("outline-color", "CSSColor", "::cssparser::Color::Curr
     }
 </%helpers:longhand>
 
-<%helpers:longhand name="outline-width" animatable="True"
+<%helpers:longhand name="outline-width" animation_type="normal"
                    spec="https://drafts.csswg.org/css-ui/#propdef-outline-width">
     use app_units::Au;
     use std::fmt;
@@ -122,9 +123,10 @@ ${helpers.predefined_type("outline-color", "CSSColor", "::cssparser::Color::Curr
     ${helpers.predefined_type("-moz-outline-radius-" + corner, "BorderRadiusSize",
         "computed::BorderRadiusSize::zero()",
         "parse", products="gecko",
-        animatable=False,
+        boxed=True,
+        animation_type="none",
         spec="Nonstandard (https://developer.mozilla.org/en-US/docs/Web/CSS/-moz-outline-radius)")}
 % endfor
 
-${helpers.predefined_type("outline-offset", "Length", "Au(0)", products="servo gecko", animatable=True,
+${helpers.predefined_type("outline-offset", "Length", "Au(0)", products="servo gecko", animation_type="normal",
                           spec="https://drafts.csswg.org/css-ui/#propdef-outline-offset")}

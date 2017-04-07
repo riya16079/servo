@@ -8,7 +8,7 @@ use app_units::Au;
 use cssparser::{Color as CSSParserColor, Parser, RGBA};
 use euclid::{Point2D, Size2D};
 #[cfg(feature = "gecko")] use gecko_bindings::structs::nsCSSPropertyID;
-use properties::{CSSWideKeyword, DeclaredValue, PropertyDeclaration};
+use properties::{CSSWideKeyword, PropertyDeclaration};
 use properties::longhands;
 use properties::longhands::background_size::computed_value::T as BackgroundSize;
 use properties::longhands::font_weight::computed_value::T as FontWeight;
@@ -22,21 +22,20 @@ use properties::longhands::transform::computed_value::ComputedOperation as Trans
 use properties::longhands::transform::computed_value::T as TransformList;
 use properties::longhands::vertical_align::computed_value::T as VerticalAlign;
 use properties::longhands::visibility::computed_value::T as Visibility;
-use properties::longhands::z_index::computed_value::T as ZIndex;
 #[cfg(feature = "gecko")] use properties::{PropertyDeclarationId, LonghandId};
 use std::cmp;
+#[cfg(feature = "gecko")] use std::collections::HashMap;
 use std::fmt;
 use style_traits::ToCss;
 use super::ComputedValues;
 use values::CSSFloat;
-use values::Either;
+use values::{Auto, Either};
 use values::computed::{Angle, LengthOrPercentageOrAuto, LengthOrPercentageOrNone};
 use values::computed::{BorderRadiusSize, ClipRect, LengthOrNone};
 use values::computed::{CalcLengthOrPercentage, Context, LengthOrPercentage};
 use values::computed::{MaxLength, MinLength};
 use values::computed::position::{HorizontalPosition, Position, VerticalPosition};
 use values::computed::ToComputedValue;
-use values::specified::Angle as SpecifiedAngle;
 
 
 
@@ -82,6 +81,7 @@ impl TransitionProperty {
 
     /// Get a transition property from a property declaration.
     pub fn from_declaration(declaration: &PropertyDeclaration) -> Option<Self> {
+        use properties::LonghandId;
         match *declaration {
             % for prop in data.longhands:
                 % if prop.animatable:
@@ -89,6 +89,18 @@ impl TransitionProperty {
                         => Some(TransitionProperty::${prop.camel_case}),
                 % endif
             % endfor
+            PropertyDeclaration::CSSWideKeyword(id, _) |
+            PropertyDeclaration::WithVariables(id, _) => {
+                match id {
+                    % for prop in data.longhands:
+                        % if prop.animatable:
+                            LonghandId::${prop.camel_case} =>
+                                Some(TransitionProperty::${prop.camel_case}),
+                        % endif
+                    % endfor
+                    _ => None,
+                }
+            },
             _ => None,
         }
     }
@@ -122,6 +134,24 @@ impl From<TransitionProperty> for nsCSSPropertyID {
                 % endif
             % endfor
             TransitionProperty::All => nsCSSPropertyID::eCSSPropertyExtra_all_properties,
+        }
+    }
+}
+
+/// Convert nsCSSPropertyID to TransitionProperty
+#[cfg(feature = "gecko")]
+#[allow(non_upper_case_globals)]
+impl From<nsCSSPropertyID> for TransitionProperty {
+    fn from(property: nsCSSPropertyID) -> TransitionProperty {
+        match property {
+            % for prop in data.longhands:
+                % if prop.animatable:
+                    ${helpers.to_nscsspropertyid(prop.ident)}
+                        => TransitionProperty::${prop.camel_case},
+                % endif
+            % endfor
+            nsCSSPropertyID::eCSSPropertyExtra_all_properties => TransitionProperty::All,
+            _ => panic!("Unsupported Servo transition property: {:?}", property),
         }
     }
 }
@@ -203,9 +233,16 @@ impl AnimatedProperty {
             % for prop in data.longhands:
                 % if prop.animatable:
                     AnimatedProperty::${prop.camel_case}(ref from, ref to) => {
-                        if let Ok(value) = from.interpolate(to, progress) {
-                            style.mutate_${prop.style_struct.ident.strip("_")}().set_${prop.ident}(value);
-                        }
+                        // https://w3c.github.io/web-animations/#discrete-animation-type
+                        % if prop.animation_type == "discrete":
+                            let value = if progress < 0.5 { *from } else { *to };
+                        % else:
+                            let value = match from.interpolate(to, progress) {
+                                Ok(value) => value,
+                                Err(()) => return,
+                            };
+                        % endif
+                        style.mutate_${prop.style_struct.ident.strip("_")}().set_${prop.ident}(value);
                     }
                 % endif
             % endfor
@@ -233,6 +270,12 @@ impl AnimatedProperty {
     }
 }
 
+/// A collection of AnimationValue that were composed on an element.
+/// This HashMap stores the values that are the last AnimationValue to be
+/// composed for each TransitionProperty.
+#[cfg(feature = "gecko")]
+pub type AnimationValueMap = HashMap<TransitionProperty, AnimationValue>;
+
 /// An enum to represent a single computed value belonging to an animated
 /// property in order to be interpolated with another one. When interpolating,
 /// both values need to belong to the same property.
@@ -259,18 +302,17 @@ impl AnimationValue {
     /// "Uncompute" this animation value in order to be used inside the CSS
     /// cascade.
     pub fn uncompute(&self) -> PropertyDeclaration {
-        use properties::{longhands, DeclaredValue};
+        use properties::longhands;
         match *self {
             % for prop in data.longhands:
                 % if prop.animatable:
                     AnimationValue::${prop.camel_case}(ref from) => {
                         PropertyDeclaration::${prop.camel_case}(
-                            DeclaredValue::Value(
-                                % if prop.boxed:
-                                    Box::new(longhands::${prop.ident}::SpecifiedValue::from_computed_value(from))))
-                                % else:
-                                    longhands::${prop.ident}::SpecifiedValue::from_computed_value(from)))
-                                % endif
+                            % if prop.boxed:
+                                Box::new(longhands::${prop.ident}::SpecifiedValue::from_computed_value(from)))
+                            % else:
+                                longhands::${prop.ident}::SpecifiedValue::from_computed_value(from))
+                            % endif
                     }
                 % endif
             % endfor
@@ -279,37 +321,106 @@ impl AnimationValue {
 
     /// Construct an AnimationValue from a property declaration
     pub fn from_declaration(decl: &PropertyDeclaration, context: &Context, initial: &ComputedValues) -> Option<Self> {
+        use error_reporting::StdoutErrorReporter;
+        use properties::LonghandId;
+        use properties::DeclaredValue;
+
         match *decl {
             % for prop in data.longhands:
-                % if prop.animatable:
-                    PropertyDeclaration::${prop.camel_case}(ref val) => {
-                        let computed = match *val {
-                            // https://bugzilla.mozilla.org/show_bug.cgi?id=1326131
-                            DeclaredValue::WithVariables(_) => unimplemented!(),
-                            DeclaredValue::Value(ref val) => val.to_computed_value(context),
-                            DeclaredValue::CSSWideKeyword(keyword) => match keyword {
-                                % if not prop.style_struct.inherited:
-                                    CSSWideKeyword::Unset |
-                                % endif
-                                CSSWideKeyword::Initial => {
-                                    let initial_struct = initial.get_${prop.style_struct.name_lower}();
-                                    initial_struct.clone_${prop.ident}()
-                                },
-                                % if prop.style_struct.inherited:
-                                    CSSWideKeyword::Unset |
-                                % endif
-                                CSSWideKeyword::Inherit => {
-                                    let inherit_struct = context.inherited_style
-                                                                .get_${prop.style_struct.name_lower}();
-                                    inherit_struct.clone_${prop.ident}()
-                                },
-                            }
+            % if prop.animatable:
+            PropertyDeclaration::${prop.camel_case}(ref val) => {
+                Some(AnimationValue::${prop.camel_case}(val.to_computed_value(context)))
+            },
+            % endif
+            % endfor
+            PropertyDeclaration::CSSWideKeyword(id, keyword) => {
+                match id {
+                    // We put all the animatable properties first in the hopes
+                    // that it might increase match locality.
+                    % for prop in data.longhands:
+                    % if prop.animatable:
+                    LonghandId::${prop.camel_case} => {
+                        let computed = match keyword {
+                            % if not prop.style_struct.inherited:
+                                CSSWideKeyword::Unset |
+                            % endif
+                            CSSWideKeyword::Initial => {
+                                let initial_struct = initial.get_${prop.style_struct.name_lower}();
+                                initial_struct.clone_${prop.ident}()
+                            },
+                            % if prop.style_struct.inherited:
+                                CSSWideKeyword::Unset |
+                            % endif
+                            CSSWideKeyword::Inherit => {
+                                let inherit_struct = context.inherited_style
+                                                            .get_${prop.style_struct.name_lower}();
+                                inherit_struct.clone_${prop.ident}()
+                            },
                         };
                         Some(AnimationValue::${prop.camel_case}(computed))
+                    },
+                    % endif
+                    % endfor
+                    % for prop in data.longhands:
+                    % if not prop.animatable:
+                    LonghandId::${prop.camel_case} => None,
+                    % endif
+                    % endfor
+                }
+            },
+            PropertyDeclaration::WithVariables(id, ref variables) => {
+                let custom_props = context.style().custom_properties();
+                let reporter = StdoutErrorReporter;
+                match id {
+                    % for prop in data.longhands:
+                    % if prop.animatable:
+                    LonghandId::${prop.camel_case} => {
+                        let mut result = None;
+                        ::properties::substitute_variables_${prop.ident}_slow(
+                            &variables.css,
+                            variables.first_token_type,
+                            &variables.url_data,
+                            variables.from_shorthand,
+                            &custom_props,
+                            |v| {
+                                let declaration = match *v {
+                                    DeclaredValue::Value(value) => {
+                                        PropertyDeclaration::${prop.camel_case}(value.clone())
+                                    },
+                                    DeclaredValue::CSSWideKeyword(keyword) => {
+                                        PropertyDeclaration::CSSWideKeyword(id, keyword)
+                                    },
+                                    DeclaredValue::WithVariables(_) => unreachable!(),
+                                };
+                                result = AnimationValue::from_declaration(&declaration, context, initial);
+                            },
+                            &reporter);
+                        result
+                    },
+                    % else:
+                    LonghandId::${prop.camel_case} => None,
+                    % endif
+                    % endfor
+                }
+            },
+            _ => None // non animatable properties will get included because of shorthands. ignore.
+        }
+    }
+
+    /// Get an AnimationValue for a TransitionProperty from a given computed values.
+    pub fn from_computed_values(transition_property: &TransitionProperty,
+                                computed_values: &ComputedValues)
+                                -> Self {
+        match *transition_property {
+            TransitionProperty::All => panic!("Can't use TransitionProperty::All here."),
+            % for prop in data.longhands:
+                % if prop.animatable:
+                    TransitionProperty::${prop.camel_case} => {
+                        AnimationValue::${prop.camel_case}(
+                            computed_values.get_${prop.style_struct.ident.strip("_")}().clone_${prop.ident}())
                     }
                 % endif
             % endfor
-            _ => None // non animatable properties will get included because of shorthands. ignore.
         }
     }
 }
@@ -321,7 +432,16 @@ impl Interpolate for AnimationValue {
                 % if prop.animatable:
                     (&AnimationValue::${prop.camel_case}(ref from),
                      &AnimationValue::${prop.camel_case}(ref to)) => {
-                        from.interpolate(to, progress).map(AnimationValue::${prop.camel_case})
+                        // https://w3c.github.io/web-animations/#discrete-animation-type
+                        % if prop.animation_type == "discrete":
+                            if progress < 0.5 {
+                                Ok(AnimationValue::${prop.camel_case}(*from))
+                            } else {
+                                Ok(AnimationValue::${prop.camel_case}(*to))
+                            }
+                        % else:
+                            from.interpolate(to, progress).map(AnimationValue::${prop.camel_case})
+                        % endif
                     }
                 % endif
             % endfor
@@ -363,6 +483,13 @@ impl Interpolate for Au {
     }
 }
 
+impl Interpolate for Auto {
+    #[inline]
+    fn interpolate(&self, _other: &Self, _progress: f64) -> Result<Self, ()> {
+        Ok(Auto)
+    }
+}
+
 impl <T> Interpolate for Option<T>
     where T: Interpolate,
 {
@@ -393,7 +520,7 @@ impl Interpolate for f64 {
     }
 }
 
-/// https://drafts.csswg.org/css-transitions/#animtype-number
+/// https://drafts.csswg.org/css-transitions/#animtype-integer
 impl Interpolate for i32 {
     #[inline]
     fn interpolate(&self, other: &i32, progress: f64) -> Result<Self, ()> {
@@ -407,7 +534,7 @@ impl Interpolate for i32 {
 impl Interpolate for Angle {
     #[inline]
     fn interpolate(&self, other: &Angle, progress: f64) -> Result<Self, ()> {
-        self.radians().interpolate(&other.radians(), progress).map(Angle)
+        self.radians().interpolate(&other.radians(), progress).map(Angle::from_radians)
     }
 }
 
@@ -424,20 +551,6 @@ impl Interpolate for Visibility {
                 } else {
                     *other
                 })
-            }
-            _ => Err(()),
-        }
-    }
-}
-
-/// https://drafts.csswg.org/css-transitions/#animtype-integer
-impl Interpolate for ZIndex {
-    #[inline]
-    fn interpolate(&self, other: &Self, progress: f64) -> Result<Self, ()> {
-        match (*self, *other) {
-            (ZIndex::Number(ref this),
-             ZIndex::Number(ref other)) => {
-                this.interpolate(other, progress).map(ZIndex::Number)
             }
             _ => Err(()),
         }
@@ -918,7 +1031,7 @@ fn build_identity_transform_list(list: &[TransformOperation]) -> Vec<TransformOp
                 result.push(TransformOperation::Matrix(identity));
             }
             TransformOperation::Skew(..) => {
-                result.push(TransformOperation::Skew(Angle(0.0), Angle(0.0)));
+                result.push(TransformOperation::Skew(Angle::zero(), Angle::zero()))
             }
             TransformOperation::Translate(..) => {
                 result.push(TransformOperation::Translate(LengthOrPercentage::zero(),
@@ -929,7 +1042,7 @@ fn build_identity_transform_list(list: &[TransformOperation]) -> Vec<TransformOp
                 result.push(TransformOperation::Scale(1.0, 1.0, 1.0));
             }
             TransformOperation::Rotate(..) => {
-                result.push(TransformOperation::Rotate(0.0, 0.0, 1.0, Angle(0.0)));
+                result.push(TransformOperation::Rotate(0.0, 0.0, 1.0, Angle::zero()));
             }
             TransformOperation::Perspective(..) => {
                 // http://dev.w3.org/csswg/css-transforms/#identity-transform-function
@@ -1018,7 +1131,7 @@ fn interpolate_transform_list(from_list: &[TransformOperation],
 }
 
 /// https://drafts.csswg.org/css-transforms/#Rotate3dDefined
-fn rotate_to_matrix(x: f32, y: f32, z: f32, a: SpecifiedAngle) -> ComputedMatrix {
+fn rotate_to_matrix(x: f32, y: f32, z: f32, a: Angle) -> ComputedMatrix {
     let half_rad = a.radians() / 2.0;
     let sc = (half_rad).sin() * (half_rad).cos();
     let sq = (half_rad).sin().powi(2);
@@ -1796,3 +1909,22 @@ impl Interpolate for TransformList {
     }
 }
 
+impl<T, U> Interpolate for Either<T, U>
+        where T: Interpolate + Copy, U: Interpolate + Copy,
+{
+    #[inline]
+    fn interpolate(&self, other: &Self, progress: f64) -> Result<Self, ()> {
+        match (*self, *other) {
+            (Either::First(ref this), Either::First(ref other)) => {
+                this.interpolate(&other, progress).map(Either::First)
+            },
+            (Either::Second(ref this), Either::Second(ref other)) => {
+                this.interpolate(&other, progress).map(Either::Second)
+            },
+            _ => {
+                let interpolated = if progress < 0.5 { *self } else { *other };
+                Ok(interpolated)
+            }
+        }
+    }
+}

@@ -749,10 +749,10 @@ impl ToCss for BorderRadius {
 }
 
 impl Parse for BorderRadius {
-    fn parse(context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
-        let mut widths = try!(parse_one_set_of_border_values(context, input));
+    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
+        let mut widths = try!(parse_one_set_of_border_values(input));
         let mut heights = if input.try(|input| input.expect_delim('/')).is_ok() {
-            try!(parse_one_set_of_border_values(context, input))
+            try!(parse_one_set_of_border_values(input))
         } else {
             [widths[0].clone(),
              widths[1].clone(),
@@ -768,23 +768,22 @@ impl Parse for BorderRadius {
     }
 }
 
-fn parse_one_set_of_border_values(context: &ParserContext, mut input: &mut Parser)
+fn parse_one_set_of_border_values(mut input: &mut Parser)
                                  -> Result<[LengthOrPercentage; 4], ()> {
-    let a = try!(LengthOrPercentage::parse(context, input));
-
-    let b = if let Ok(b) = input.try(|i| LengthOrPercentage::parse(context, i)) {
+    let a = try!(LengthOrPercentage::parse_non_negative(input));
+    let b = if let Ok(b) = input.try(|i| LengthOrPercentage::parse_non_negative(i)) {
         b
     } else {
         return Ok([a.clone(), a.clone(), a.clone(), a])
     };
 
-    let c = if let Ok(c) = input.try(|i| LengthOrPercentage::parse(context, i)) {
+    let c = if let Ok(c) = input.try(|i| LengthOrPercentage::parse_non_negative(i)) {
         c
     } else {
         return Ok([a.clone(), b.clone(), a, b])
     };
 
-    if let Ok(d) = input.try(|i| LengthOrPercentage::parse(context, i)) {
+    if let Ok(d) = input.try(|i| LengthOrPercentage::parse_non_negative(i)) {
         Ok([a, b, c, d])
     } else {
         Ok([a, b.clone(), c, b])
@@ -860,9 +859,9 @@ impl ToCss for FillRule {
 #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
 #[allow(missing_docs)]
 pub enum GeometryBox {
-    Fill,
-    Stroke,
-    View,
+    FillBox,
+    StrokeBox,
+    ViewBox,
     ShapeBox(ShapeBox),
 }
 
@@ -872,9 +871,9 @@ impl Parse for GeometryBox {
             Ok(GeometryBox::ShapeBox(shape_box))
         } else {
             match_ignore_ascii_case! { &try!(input.expect_ident()),
-                "fill-box" => Ok(GeometryBox::Fill),
-                "stroke-box" => Ok(GeometryBox::Stroke),
-                "view-box" => Ok(GeometryBox::View),
+                "fill-box" => Ok(GeometryBox::FillBox),
+                "stroke-box" => Ok(GeometryBox::StrokeBox),
+                "view-box" => Ok(GeometryBox::ViewBox),
                 _ => Err(())
             }
         }
@@ -884,9 +883,9 @@ impl Parse for GeometryBox {
 impl ToCss for GeometryBox {
     fn to_css<W>(&self, dest: &mut W) -> fmt::Result where W: fmt::Write {
         match *self {
-            GeometryBox::Fill => dest.write_str("fill-box"),
-            GeometryBox::Stroke => dest.write_str("stroke-box"),
-            GeometryBox::View => dest.write_str("view-box"),
+            GeometryBox::FillBox => dest.write_str("fill-box"),
+            GeometryBox::StrokeBox => dest.write_str("stroke-box"),
+            GeometryBox::ViewBox => dest.write_str("view-box"),
             GeometryBox::ShapeBox(s) => s.to_css(dest),
         }
     }
@@ -899,20 +898,20 @@ impl ComputedValueAsSpecified for GeometryBox {}
 #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
 #[allow(missing_docs)]
 pub enum ShapeBox {
-    Margin,
+    MarginBox,
     // https://drafts.csswg.org/css-backgrounds-3/#box
-    Border,
-    Padding,
-    Content,
+    BorderBox,
+    PaddingBox,
+    ContentBox,
 }
 
 impl Parse for ShapeBox {
     fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
         match_ignore_ascii_case! { &try!(input.expect_ident()),
-            "margin-box" => Ok(ShapeBox::Margin),
-            "border-box" => Ok(ShapeBox::Border),
-            "padding-box" => Ok(ShapeBox::Padding),
-            "content-box" => Ok(ShapeBox::Content),
+            "margin-box" => Ok(ShapeBox::MarginBox),
+            "border-box" => Ok(ShapeBox::BorderBox),
+            "padding-box" => Ok(ShapeBox::PaddingBox),
+            "content-box" => Ok(ShapeBox::ContentBox),
             _ => Err(())
         }
     }
@@ -921,10 +920,10 @@ impl Parse for ShapeBox {
 impl ToCss for ShapeBox {
     fn to_css<W>(&self, dest: &mut W) -> fmt::Result where W: fmt::Write {
         match *self {
-            ShapeBox::Margin => dest.write_str("margin-box"),
-            ShapeBox::Border => dest.write_str("border-box"),
-            ShapeBox::Padding => dest.write_str("padding-box"),
-            ShapeBox::Content => dest.write_str("content-box"),
+            ShapeBox::MarginBox => dest.write_str("margin-box"),
+            ShapeBox::BorderBox => dest.write_str("border-box"),
+            ShapeBox::PaddingBox => dest.write_str("padding-box"),
+            ShapeBox::ContentBox => dest.write_str("content-box"),
         }
     }
 }

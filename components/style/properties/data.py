@@ -92,11 +92,12 @@ def arg_to_bool(arg):
 
 
 class Longhand(object):
-    def __init__(self, style_struct, name, spec=None, animatable=None, derived_from=None, keyword=None,
+    def __init__(self, style_struct, name, spec=None, animation_type=None, derived_from=None, keyword=None,
                  predefined_type=None, custom_cascade=False, experimental=False, internal=False,
                  need_clone=False, need_index=False, gecko_ffi_name=None, depend_on_viewport_size=False,
                  allowed_in_keyframe_block=True, complex_color=False, cast_type='u8',
-                 has_uncacheable_values=False, logical=False, alias=None, extra_prefixes=None, boxed=False):
+                 has_uncacheable_values=False, logical=False, alias=None, extra_prefixes=None, boxed=False,
+                 creates_stacking_context=False, fixpos_cb=False, abspos_cb=False):
         self.name = name
         if not spec:
             raise TypeError("Spec should be specified for %s" % name)
@@ -120,6 +121,9 @@ class Longhand(object):
         self.alias = alias.split() if alias else []
         self.extra_prefixes = extra_prefixes.split() if extra_prefixes else []
         self.boxed = arg_to_bool(boxed)
+        self.creates_stacking_context = arg_to_bool(creates_stacking_context)
+        self.fixpos_cb = arg_to_bool(fixpos_cb)
+        self.abspos_cb = arg_to_bool(abspos_cb)
 
         # https://drafts.csswg.org/css-animations/#keyframes
         # > The <declaration-list> inside of <keyframe-block> accepts any CSS property
@@ -130,9 +134,14 @@ class Longhand(object):
 
         # This is done like this since just a plain bool argument seemed like
         # really random.
-        if animatable is None:
-            raise TypeError("animatable should be specified for " + name + ")")
-        self.animatable = arg_to_bool(animatable)
+        if animation_type is None:
+            raise TypeError("animation_type should be specified for (" + name + ")")
+        animation_types = ["none", "normal", "discrete"]
+        if animation_type not in animation_types:
+            raise TypeError("animation_type should be one of (" + str(animation_types) + ")")
+        self.animation_type = animation_type
+
+        self.animatable = animation_type != "none"
         if self.logical:
             # Logical properties don't animate separately
             self.animatable = False
@@ -211,11 +220,13 @@ class PropertiesData(object):
 
         In this situation, the `product` value is ignored while choosing
         which shorthands and longhands to generate; and instead all properties for
-        which code exists for either servo or stylo are generated.
+        which code exists for either servo or stylo are generated. Note that we skip
+        this behavior when the style crate is being built in gecko mode, because we
+        need manual glue for such properties and we don't have it.
     """
     def __init__(self, product, testing):
         self.product = product
-        self.testing = testing
+        self.testing = testing and product != "gecko"
         self.style_structs = []
         self.current_style_struct = None
         self.longhands = []

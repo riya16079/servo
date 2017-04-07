@@ -13,64 +13,21 @@
     ${helpers.predefined_type(side, "LengthOrPercentageOrAuto",
                               "computed::LengthOrPercentageOrAuto::Auto",
                               spec="https://www.w3.org/TR/CSS2/visuren.html#propdef-%s" % side,
-                              animatable=True)}
+                              animation_type="normal")}
 % endfor
 // offset-* logical properties, map to "top" / "left" / "bottom" / "right"
 % for side in LOGICAL_SIDES:
     ${helpers.predefined_type("offset-%s" % side, "LengthOrPercentageOrAuto",
                               "computed::LengthOrPercentageOrAuto::Auto",
                               spec="https://drafts.csswg.org/css-logical-props/#propdef-offset-%s" % side,
-                              animatable=True, logical=True)}
+                              animation_type="normal", logical=True)}
 % endfor
 
-<%helpers:longhand name="z-index" spec="https://www.w3.org/TR/CSS2/visuren.html#z-index" animatable="True">
-    use values::HasViewportPercentage;
-    use values::computed::ComputedValueAsSpecified;
-
-    impl ComputedValueAsSpecified for SpecifiedValue {}
-    no_viewport_percentage!(SpecifiedValue);
-    pub type SpecifiedValue = computed_value::T;
-    pub mod computed_value {
-        use std::fmt;
-        use style_traits::ToCss;
-
-        #[derive(PartialEq, Clone, Eq, Copy, Debug)]
-        #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
-        pub enum T {
-            Auto,
-            Number(i32),
-        }
-
-        impl ToCss for T {
-            fn to_css<W>(&self, dest: &mut W) -> fmt::Result where W: fmt::Write {
-                match *self {
-                    T::Auto => dest.write_str("auto"),
-                    T::Number(number) => write!(dest, "{}", number),
-                }
-            }
-        }
-
-        impl T {
-            pub fn number_or_zero(self) -> i32 {
-                match self {
-                    T::Auto => 0,
-                    T::Number(value) => value,
-                }
-            }
-        }
-    }
-    #[inline]
-    pub fn get_initial_value() -> computed_value::T {
-        computed_value::T::Auto
-    }
-    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<SpecifiedValue, ()> {
-        if input.try(|input| input.expect_ident_matching("auto")).is_ok() {
-            Ok(computed_value::T::Auto)
-        } else {
-            specified::parse_integer(input).map(computed_value::T::Number)
-        }
-    }
-</%helpers:longhand>
+${helpers.predefined_type("z-index", "IntegerOrAuto",
+                          "Either::Second(Auto)",
+                          spec="https://www.w3.org/TR/CSS2/visuren.html#z-index",
+                          creates_stacking_context=True,
+                          animation_type="normal")}
 
 // CSS Flexible Box Layout Module Level 1
 // http://www.w3.org/TR/css3-flexbox/
@@ -78,25 +35,25 @@
 // Flex container properties
 ${helpers.single_keyword("flex-direction", "row row-reverse column column-reverse",
                          spec="https://drafts.csswg.org/css-flexbox/#flex-direction-property",
-                         extra_prefixes="webkit", animatable=False)}
+                         extra_prefixes="webkit", animation_type="none")}
 
 ${helpers.single_keyword("flex-wrap", "nowrap wrap wrap-reverse",
                          spec="https://drafts.csswg.org/css-flexbox/#flex-wrap-property",
-                         extra_prefixes="webkit", animatable=False)}
+                         extra_prefixes="webkit", animation_type="none")}
 
 % if product == "servo":
     // FIXME: Update Servo to support the same Syntax as Gecko.
-    ${helpers.single_keyword("justify-content", "stretch flex-start flex-end center space-between space-around",
+    ${helpers.single_keyword("justify-content", "flex-start stretch flex-end center space-between space-around",
                              extra_prefixes="webkit",
                              spec="https://drafts.csswg.org/css-align/#propdef-justify-content",
-                             animatable=False)}
+                             animation_type="none")}
 % else:
     ${helpers.predefined_type(name="justify-content",
                               type="AlignJustifyContent",
                               initial_value="specified::AlignJustifyContent::normal()",
                               spec="https://drafts.csswg.org/css-align/#propdef-justify-content",
                               extra_prefixes="webkit",
-                              animatable=False)}
+                              animation_type="none")}
 % endif
 
 % if product == "servo":
@@ -104,34 +61,33 @@ ${helpers.single_keyword("flex-wrap", "nowrap wrap wrap-reverse",
     ${helpers.single_keyword("align-content", "stretch flex-start flex-end center space-between space-around",
                              extra_prefixes="webkit",
                              spec="https://drafts.csswg.org/css-align/#propdef-align-content",
-                             animatable=False)}
+                             animation_type="none")}
 
     ${helpers.single_keyword("align-items",
                              "stretch flex-start flex-end center baseline",
-                             need_clone=True,
                              extra_prefixes="webkit",
                              spec="https://drafts.csswg.org/css-flexbox/#align-items-property",
-                             animatable=False)}
+                             animation_type="discrete")}
 % else:
     ${helpers.predefined_type(name="align-content",
                               type="AlignJustifyContent",
                               initial_value="specified::AlignJustifyContent::normal()",
                               spec="https://drafts.csswg.org/css-align/#propdef-align-content",
                               extra_prefixes="webkit",
-                              animatable=False)}
+                              animation_type="none")}
 
     ${helpers.predefined_type(name="align-items",
                               type="AlignItems",
                               initial_value="specified::AlignItems::normal()",
                               spec="https://drafts.csswg.org/css-align/#propdef-align-items",
                               extra_prefixes="webkit",
-                              animatable=False)}
+                              animation_type="discrete")}
 
     ${helpers.predefined_type(name="justify-items",
                               type="JustifyItems",
                               initial_value="specified::JustifyItems::auto()",
                               spec="https://drafts.csswg.org/css-align/#propdef-justify-items",
-                              animatable=False)}
+                              animation_type="none")}
 % endif
 
 // Flex item properties
@@ -140,14 +96,14 @@ ${helpers.predefined_type("flex-grow", "Number",
                           spec="https://drafts.csswg.org/css-flexbox/#flex-grow-property",
                           extra_prefixes="webkit",
                           needs_context=False,
-                          animatable=True)}
+                          animation_type="normal")}
 
 ${helpers.predefined_type("flex-shrink", "Number",
                           "1.0", "parse_non_negative",
                           spec="https://drafts.csswg.org/css-flexbox/#flex-shrink-property",
                           extra_prefixes="webkit",
                           needs_context=False,
-                          animatable=True)}
+                          animation_type="normal")}
 
 // https://drafts.csswg.org/css-align/#align-self-property
 % if product == "servo":
@@ -156,52 +112,40 @@ ${helpers.predefined_type("flex-shrink", "Number",
                              need_clone=True,
                              extra_prefixes="webkit",
                              spec="https://drafts.csswg.org/css-flexbox/#propdef-align-self",
-                             animatable=False)}
+                             animation_type="none")}
 % else:
     ${helpers.predefined_type(name="align-self",
                               type="AlignJustifySelf",
                               initial_value="specified::AlignJustifySelf::auto()",
                               spec="https://drafts.csswg.org/css-align/#align-self-property",
                               extra_prefixes="webkit",
-                              animatable=False)}
+                              animation_type="none")}
 
     ${helpers.predefined_type(name="justify-self",
                               type="AlignJustifySelf",
                               initial_value="specified::AlignJustifySelf::auto()",
                               spec="https://drafts.csswg.org/css-align/#justify-self-property",
-                              animatable=False)}
+                              animation_type="none")}
 % endif
 
 // https://drafts.csswg.org/css-flexbox/#propdef-order
-<%helpers:longhand name="order" animatable="True" extra_prefixes="webkit"
-                   spec="https://drafts.csswg.org/css-flexbox/#order-property">
-    use values::computed::ComputedValueAsSpecified;
+${helpers.predefined_type("order", "Integer", "0",
+                          extra_prefixes="webkit",
+                          animation_type="normal",
+                          spec="https://drafts.csswg.org/css-flexbox/#order-property")}
 
-    impl ComputedValueAsSpecified for SpecifiedValue {}
-
-    pub type SpecifiedValue = computed_value::T;
-
-    pub mod computed_value {
-        pub type T = i32;
-    }
-
-    #[inline]
-    pub fn get_initial_value() -> computed_value::T {
-        0
-    }
-
-    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<SpecifiedValue, ()> {
-        specified::parse_integer(input)
-    }
-</%helpers:longhand>
-
+// FIXME: Gecko doesn't support content value yet.
 // FIXME: This property should be animatable.
 ${helpers.predefined_type("flex-basis",
+                          "LengthOrPercentageOrAuto" if product == "gecko" else
                           "LengthOrPercentageOrAutoOrContent",
+                          "computed::LengthOrPercentageOrAuto::Auto" if product == "gecko" else
                           "computed::LengthOrPercentageOrAutoOrContent::Auto",
+                          "parse_non_negative",
+                          needs_context=False,
                           spec="https://drafts.csswg.org/css-flexbox/#flex-basis-property",
                           extra_prefixes="webkit",
-                          animatable=False)}
+                          animation_type="normal" if product == "gecko" else "none")}
 
 % for (size, logical) in ALL_SIZES:
     <%
@@ -216,7 +160,7 @@ ${helpers.predefined_type("flex-basis",
                               "parse_non_negative",
                               needs_context=False,
                               spec=spec % size,
-                              animatable=True, logical = logical)}
+                              animation_type="normal", logical = logical)}
     % if product == "gecko":
         % for min_max in ["min", "max"]:
             <%
@@ -230,7 +174,7 @@ ${helpers.predefined_type("flex-basis",
             // Keyword values are only valid in the inline direction; they must
             // be replaced with auto/none in block.
             <%helpers:longhand name="${min_max}-${size}" spec="${spec % ('%s-%s' % (min_max, size))}"
-                               animatable="True" logical="${logical}" predefined_type="${MinMax}Length">
+                               animation_type="normal" logical="${logical}" predefined_type="${MinMax}Length">
 
                 use std::fmt;
                 use style_traits::ToCss;
@@ -306,14 +250,14 @@ ${helpers.predefined_type("flex-basis",
                                   "parse_non_negative",
                                   needs_context=False,
                                   spec=spec % ("min-%s" % size),
-                                  animatable=True, logical = logical)}
+                                  animation_type="normal", logical = logical)}
         ${helpers.predefined_type("max-%s" % size,
                                   "LengthOrPercentageOrNone",
                                   "computed::LengthOrPercentageOrNone::None",
                                   "parse_non_negative",
                                   needs_context=False,
                                   spec=spec % ("min-%s" % size),
-                                  animatable=True, logical = logical)}
+                                  animation_type="normal", logical = logical)}
     % endif
 % endfor
 
@@ -321,10 +265,10 @@ ${helpers.single_keyword("box-sizing",
                          "content-box border-box",
                          extra_prefixes="moz webkit",
                          spec="https://drafts.csswg.org/css-ui/#propdef-box-sizing",
-                         animatable=False)}
+                         animation_type="none")}
 
 ${helpers.single_keyword("object-fit", "fill contain cover none scale-down",
-                         products="gecko", animatable=False,
+                         products="gecko", animation_type="none",
                          spec="https://drafts.csswg.org/css-images/#propdef-object-fit")}
 
 ${helpers.predefined_type("object-position",
@@ -333,21 +277,21 @@ ${helpers.predefined_type("object-position",
                           products="gecko",
                           boxed="True",
                           spec="https://drafts.csswg.org/css-images-3/#the-object-position",
-                          animatable=True)}
+                          animation_type="normal")}
 
 % for kind in ["row", "column"]:
     ${helpers.predefined_type("grid-%s-gap" % kind,
                               "LengthOrPercentage",
                               "computed::LengthOrPercentage::Length(Au(0))",
                               spec="https://drafts.csswg.org/css-grid/#propdef-grid-%s-gap" % kind,
-                              animatable=True,
+                              animation_type="normal",
                               products="gecko")}
 
     % for range in ["start", "end"]:
         ${helpers.predefined_type("grid-%s-%s" % (kind, range),
                                   "GridLine",
                                   "Default::default()",
-                                  animatable=False,
+                                  animation_type="none",
                                   spec="https://drafts.csswg.org/css-grid/#propdef-grid-%s-%s" % (kind, range),
                                   products="gecko",
                                   boxed=True)}
@@ -358,8 +302,94 @@ ${helpers.predefined_type("object-position",
     ${helpers.predefined_type("grid-auto-%ss" % kind,
                               "TrackSize",
                               "Default::default()",
-                              animatable=False,
+                              animation_type="none",
                               spec="https://drafts.csswg.org/css-grid/#propdef-grid-auto-%ss" % kind,
                               products="gecko",
                               boxed=True)}
 % endfor
+
+<%helpers:longhand name="grid-auto-flow"
+        spec="https://drafts.csswg.org/css-grid/#propdef-grid-auto-flow"
+        products="gecko"
+        animation_type="none">
+    use std::fmt;
+    use style_traits::ToCss;
+    use values::HasViewportPercentage;
+    use values::computed::ComputedValueAsSpecified;
+
+    pub type SpecifiedValue = computed_value::T;
+
+    pub mod computed_value {
+        #[derive(PartialEq, Clone, Eq, Copy, Debug)]
+        #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
+        pub enum AutoFlow {
+            Row,
+            Column,
+        }
+
+        #[derive(PartialEq, Clone, Eq, Copy, Debug)]
+        #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
+        pub struct T {
+            pub autoflow: AutoFlow,
+            pub dense: bool,
+        }
+    }
+
+    no_viewport_percentage!(SpecifiedValue);
+    impl ComputedValueAsSpecified for SpecifiedValue {}
+
+    impl ToCss for computed_value::T {
+        fn to_css<W>(&self, dest: &mut W) -> fmt::Result where W: fmt::Write {
+            dest.write_str(match self.autoflow {
+                computed_value::AutoFlow::Column => "column",
+                computed_value::AutoFlow::Row => "row"
+            })?;
+
+            if self.dense { dest.write_str(" dense")?; }
+            Ok(())
+        }
+    }
+
+    #[inline]
+    pub fn get_initial_value() -> computed_value::T {
+        computed_value::T {
+            autoflow: computed_value::AutoFlow::Row,
+            dense: false
+        }
+    }
+
+    /// [ row | column ] || dense
+    pub fn parse(_context: &ParserContext, input: &mut Parser) -> Result<SpecifiedValue, ()> {
+        use self::computed_value::AutoFlow;
+
+        let mut value = None;
+        let mut dense = false;
+
+        while !input.is_exhausted() {
+            match_ignore_ascii_case! { &input.expect_ident()?,
+                "row" if value.is_none() => {
+                    value = Some(AutoFlow::Row);
+                    continue
+                },
+                "column" if value.is_none() => {
+                    value = Some(AutoFlow::Column);
+                    continue
+                },
+                "dense" if !dense => {
+                    dense = true;
+                    continue
+                },
+                _ => return Err(())
+            }
+        }
+
+        if value.is_some() || dense {
+            Ok(computed_value::T {
+                autoflow: value.unwrap_or(AutoFlow::Row),
+                dense: dense,
+            })
+        } else {
+            Err(())
+        }
+    }
+</%helpers:longhand>

@@ -6,7 +6,6 @@
 
 use gecko_bindings::structs;
 use gecko_bindings::sugar::ownership::HasArcFFI;
-use heapsize::HeapSizeOf;
 use std::{mem, ptr};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -69,6 +68,15 @@ impl<T: RefCounted> RefPtr<T> {
         };
         ret.addref();
         ret
+    }
+
+    /// Create a reference to RefPtr from a reference to pointer.
+    ///
+    /// The pointer must be valid and non null.
+    ///
+    /// This method doesn't touch refcount.
+    pub unsafe fn from_ptr_ref(ptr: &*mut T) -> &Self {
+        mem::transmute(ptr)
     }
 
     /// Produces an FFI-compatible RefPtr that can be stored in style structs.
@@ -222,10 +230,6 @@ impl<T: RefCounted> Clone for RefPtr<T> {
     }
 }
 
-impl<T: RefCounted> HeapSizeOf for RefPtr<T> {
-    fn heap_size_of_children(&self) -> usize { 0 }
-}
-
 impl<T: RefCounted> PartialEq for RefPtr<T> {
     fn eq(&self, other: &Self) -> bool {
         self.ptr == other.ptr
@@ -235,10 +239,7 @@ impl<T: RefCounted> PartialEq for RefPtr<T> {
 unsafe impl<T: ThreadSafeRefCounted> Send for RefPtr<T> {}
 unsafe impl<T: ThreadSafeRefCounted> Sync for RefPtr<T> {}
 
-// Companion of NS_DECL_THREADSAFE_FFI_REFCOUNTING.
-//
-// Gets you a free RefCounted impl implemented via FFI.
-macro_rules! impl_threadsafe_refcount {
+macro_rules! impl_refcount {
     ($t:ty, $addref:ident, $release:ident) => (
         unsafe impl RefCounted for $t {
             fn addref(&self) {
@@ -248,16 +249,25 @@ macro_rules! impl_threadsafe_refcount {
                 ::gecko_bindings::bindings::$release(self as *const _ as *mut _)
             }
         }
+    );
+}
+
+impl_refcount!(::gecko_bindings::structs::nsCSSFontFaceRule,
+               Gecko_CSSFontFaceRule_AddRef, Gecko_CSSFontFaceRule_Release);
+
+// Companion of NS_DECL_THREADSAFE_FFI_REFCOUNTING.
+//
+// Gets you a free RefCounted impl implemented via FFI.
+macro_rules! impl_threadsafe_refcount {
+    ($t:ty, $addref:ident, $release:ident) => (
+        impl_refcount!($t, $addref, $release);
         unsafe impl ThreadSafeRefCounted for $t {}
     );
 }
 
-impl_threadsafe_refcount!(::gecko_bindings::structs::ThreadSafePrincipalHolder,
-                          Gecko_AddRefPrincipalArbitraryThread,
-                          Gecko_ReleasePrincipalArbitraryThread);
-impl_threadsafe_refcount!(::gecko_bindings::structs::ThreadSafeURIHolder,
-                          Gecko_AddRefURIArbitraryThread,
-                          Gecko_ReleaseURIArbitraryThread);
+impl_threadsafe_refcount!(::gecko_bindings::structs::RawGeckoURLExtraData,
+                          Gecko_AddRefURLExtraDataArbitraryThread,
+                          Gecko_ReleaseURLExtraDataArbitraryThread);
 impl_threadsafe_refcount!(::gecko_bindings::structs::nsStyleQuoteValues,
                           Gecko_AddRefQuoteValuesArbitraryThread,
                           Gecko_ReleaseQuoteValuesArbitraryThread);
@@ -267,10 +277,3 @@ impl_threadsafe_refcount!(::gecko_bindings::structs::nsCSSValueSharedList,
 impl_threadsafe_refcount!(::gecko_bindings::structs::mozilla::css::URLValue,
                           Gecko_AddRefCSSURLValueArbitraryThread,
                           Gecko_ReleaseCSSURLValueArbitraryThread);
-/// A Gecko `ThreadSafePrincipalHolder` wrapped in a safe refcounted pointer, to
-/// use during stylesheet parsing and style computation.
-pub type GeckoArcPrincipal = RefPtr<::gecko_bindings::structs::ThreadSafePrincipalHolder>;
-
-/// A Gecko `ThreadSafeURIHolder` wrapped in a safe refcounted pointer, to use
-/// during stylesheet parsing and style computation.
-pub type GeckoArcURI = RefPtr<::gecko_bindings::structs::ThreadSafeURIHolder>;

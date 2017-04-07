@@ -35,7 +35,7 @@ mod bindings {
     use std::cmp;
     use std::collections::HashSet;
     use std::env;
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::io::{Read, Write};
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
@@ -59,6 +59,11 @@ mod bindings {
         pub static ref LAST_MODIFIED: Mutex<SystemTime> =
             Mutex::new(get_modified_time(&env::current_exe().unwrap())
                        .expect("Failed to get modified time of executable"));
+        static ref BINDING_DISTDIR_PATH: PathBuf = {
+            let path = DISTDIR_PATH.join("rust_bindings/style");
+            fs::create_dir_all(&path).expect("Fail to create bindings dir in dist");
+            path
+        };
     }
 
     fn get_modified_time(file: &Path) -> Option<SystemTime> {
@@ -229,7 +234,10 @@ mod bindings {
             result = Regex::new(&format!(r"\b{}\b", fixup.pat)).unwrap().replace_all(&result, fixup.rep.as_str())
                 .into_owned().into();
         }
-        File::create(&out_file).unwrap().write_all(&result.into_bytes()).expect("Unable to write output");
+        let bytes = result.into_bytes();
+        File::create(&out_file).unwrap().write_all(&bytes).expect("Unable to write output");
+        File::create(&BINDING_DISTDIR_PATH.join(file)).unwrap()
+            .write_all(&bytes).expect("Unable to write output to binding dist");
     }
 
     fn get_arc_types() -> Vec<String> {
@@ -258,17 +266,23 @@ mod bindings {
                 vars: true,
                 ..CodegenConfig::nothing()
             })
+            .include(add_include("nsCSSPseudoClasses.h"))   // servo/rust-bindgen#599
             .header(add_include("nsStyleStruct.h"))
             .include(add_include("mozilla/ServoPropPrefList.h"))
             .header(add_include("mozilla/StyleAnimationValue.h"))
             .include(add_include("gfxFontConstants.h"))
             .include(add_include("nsThemeConstants.h"))
             .include(add_include("mozilla/dom/AnimationEffectReadOnlyBinding.h"))
+            .include(add_include("mozilla/AnimationPropertySegment.h"))
+            .include(add_include("mozilla/ComputedTiming.h"))
+            .include(add_include("mozilla/ComputedTimingFunction.h"))
             .include(add_include("mozilla/Keyframe.h"))
             .include(add_include("mozilla/ServoElementSnapshot.h"))
             .include(add_include("mozilla/dom/Element.h"))
             .include(add_include("mozilla/dom/NameSpaceConstants.h"))
+            .include(add_include("mozilla/LookAndFeel.h"))
             .include(add_include("mozilla/ServoBindings.h"))
+            .include(add_include("nsCSSFontFaceRule.h"))
             .include(add_include("nsMediaFeatures.h"))
             .include(add_include("nsMediaList.h"))
             // FIXME(emilio): Incrementally remove these "pub use"s. Probably
@@ -281,7 +295,8 @@ mod bindings {
             .raw_line("use data::ElementData;")
             .hide_type("nsString")
             .bitfield_enum("nsChangeHint")
-            .bitfield_enum("nsRestyleHint");
+            .bitfield_enum("nsRestyleHint")
+            .constified_enum("UpdateAnimationsTasks");
         let whitelist_vars = [
             "NS_THEME_.*",
             "NODE_.*",
@@ -292,9 +307,14 @@ mod bindings {
             "BORDER_STYLE_.*",
             "mozilla::SERVO_PREF_.*",
             "kNameSpaceID_.*",
+            "kGenericFont_.*",
         ];
         let whitelist = [
             "RawGecko.*",
+            "mozilla::AnimationPropertySegment",
+            "mozilla::ComputedTiming",
+            "mozilla::ComputedTimingFunction",
+            "mozilla::ComputedTimingFunction::BeforeFlag",
             "mozilla::ServoStyleSheet",
             "mozilla::ServoElementSnapshot.*",
             "mozilla::CSSPseudoClassType",
@@ -304,6 +324,8 @@ mod bindings {
             "mozilla::TraversalRootBehavior",
             "mozilla::StyleShapeRadius",
             "mozilla::StyleGrid.*",
+            "mozilla::UpdateAnimationsTasks",
+            "mozilla::LookAndFeel",
             ".*ThreadSafe.*Holder",
             "AnonymousContent",
             "AudioContext",
@@ -317,6 +339,7 @@ mod bindings {
             "FontFamilyType",
             "FragmentOrURL",
             "FrameRequestCallback",
+            "GeckoParserExtraData",
             "gfxAlternateValue",
             "gfxFontFeature",
             "gfxFontVariation",
@@ -330,6 +353,7 @@ mod bindings {
             "nsBorderColors",
             "nscolor",
             "nsChangeHint",
+            "nsCSSFontFaceRule",
             "nsCSSKeyword",
             "nsCSSPropertyID",
             "nsCSSProps",
@@ -417,21 +441,18 @@ mod bindings {
             "mozilla::DefaultDelete",
             "mozilla::Side",
             "mozilla::binding_danger::AssertAndSuppressCleanupPolicy",
-            "RawServoAnimationValueBorrowedListBorrowed",
+            "RawServoAnimationValueMapBorrowed",
         ];
         let opaque_types = [
             "std::pair__PCCP",
             "std::namespace::atomic___base", "std::atomic__My_base",
+            "std::atomic",
             "std::atomic___base",
             "mozilla::gfx::.*",
             "FallibleTArray",
             "mozilla::dom::Sequence",
             "mozilla::dom::Optional",
             "mozilla::dom::Nullable",
-            "nsAString_internal_char_traits",
-            "nsAString_internal_incompatible_char_type",
-            "nsACString_internal_char_traits",
-            "nsACString_internal_incompatible_char_type",
             "RefPtr_Proxy",
             "RefPtr_Proxy_member_function",
             "nsAutoPtr_Proxy",
@@ -459,6 +480,10 @@ mod bindings {
             "mozilla::ErrorResult",  // Causes JSWhyMagic to be included & handled incorrectly.
             "mozilla::StyleAnimationValue",
             "StyleAnimationValue", // pulls in a whole bunch of stuff we don't need in the bindings
+        ];
+        let blacklist = [
+            ".*_char_traits",
+            ".*_incompatible_char_type",
         ];
 
         struct MappedGenericType {
@@ -498,6 +523,9 @@ mod bindings {
         for &ty in opaque_types.iter() {
             builder = builder.opaque_type(ty);
         }
+        for &ty in blacklist.iter() {
+            builder = builder.hide_type(ty);
+        }
         for ty in servo_mapped_generic_types.iter() {
             let gecko_name = ty.gecko.rsplit("::").next().unwrap();
             builder = builder.hide_type(ty.gecko)
@@ -509,6 +537,48 @@ mod bindings {
             });
         }
         write_binding_file(builder, structs_file(build_type), &fixups);
+    }
+
+    pub fn setup_logging() {
+        use log;
+
+        struct BuildLogger {
+            file: Option<Mutex<fs::File>>,
+            filter: String,
+        }
+
+        impl log::Log for BuildLogger {
+            fn enabled(&self, meta: &log::LogMetadata) -> bool {
+                self.file.is_some() && meta.target().contains(&self.filter)
+            }
+
+            fn log(&self, record: &log::LogRecord) {
+                if !self.enabled(record.metadata()) {
+                    return;
+                }
+
+                let mut file = self.file.as_ref().unwrap().lock().unwrap();
+                let _ =
+                    writeln!(file, "{} - {} - {} @ {}:{}",
+                             record.level(),
+                             record.target(),
+                             record.args(),
+                             record.location().file(),
+                             record.location().line());
+            }
+        }
+
+        log::set_logger(|log_level| {
+            log_level.set(log::LogLevelFilter::Debug);
+            Box::new(BuildLogger {
+                file: env::var("STYLO_BUILD_LOG").ok().and_then(|path| {
+                    fs::File::create(path).ok().map(Mutex::new)
+                }),
+                filter: env::var("STYLO_BUILD_FILTER").ok()
+                    .unwrap_or_else(|| "bindgen".to_owned()),
+            })
+        })
+        .expect("Failed to set logger.");
     }
 
     pub fn generate_bindings() {
@@ -528,21 +598,26 @@ mod bindings {
             .whitelisted_function("Gecko_.*");
         let structs_types = [
             "mozilla::css::URLValue",
+            "RawGeckoAnimationPropertySegment",
+            "RawGeckoComputedTiming",
             "RawGeckoDocument",
             "RawGeckoElement",
             "RawGeckoKeyframeList",
             "RawGeckoComputedKeyframeValuesList",
+            "RawGeckoFontFaceRuleList",
             "RawGeckoNode",
             "RawGeckoAnimationValueList",
             "RawServoAnimationValue",
+            "RawServoAnimationValueMap",
             "RawServoDeclarationBlock",
             "RawGeckoPresContext",
             "RawGeckoPresContextOwned",
+            "RawGeckoStyleAnimationList",
+            "RawGeckoURLExtraData",
             "RefPtr",
-            "ThreadSafeURIHolder",
-            "ThreadSafePrincipalHolder",
             "CSSPseudoClassType",
             "TraversalRootBehavior",
+            "ComputedTimingFunction_BeforeFlag",
             "FontFamilyList",
             "FontFamilyType",
             "Keyframe",
@@ -552,9 +627,11 @@ mod bindings {
             "StyleBasicShape",
             "StyleBasicShapeType",
             "StyleShapeSource",
+            "nsCSSFontFaceRule",
             "nsCSSKeyword",
             "nsCSSPropertyID",
             "nsCSSShadowArray",
+            "nsCSSUnit",
             "nsCSSValue",
             "nsCSSValueSharedList",
             "nsChangeHint",
@@ -568,6 +645,8 @@ mod bindings {
             "nsStyleColor",
             "nsStyleColumn",
             "nsStyleContent",
+            "nsStyleContentData",
+            "nsStyleContentType",
             "nsStyleContext",
             "nsStyleCoord",
             "nsStyleCoord_Calc",
@@ -610,7 +689,7 @@ mod bindings {
             "Loader",
             "ServoStyleSheet",
             "EffectCompositor_CascadeLevel",
-            "RawServoAnimationValueBorrowedListBorrowed",
+            "UpdateAnimationsTasks",
         ];
         struct ArrayType {
             cpp_type: &'static str,
@@ -634,12 +713,17 @@ mod bindings {
             "RawGeckoDocument",
             "RawServoDeclarationBlockStrong",
             "RawGeckoPresContext",
+            "RawGeckoStyleAnimationList",
         ];
         let servo_borrow_types = [
             "nsCSSValue",
+            "nsTimingFunction",
+            "RawGeckoAnimationPropertySegment",
             "RawGeckoAnimationValueList",
+            "RawGeckoComputedTiming",
             "RawGeckoKeyframeList",
             "RawGeckoComputedKeyframeValuesList",
+            "RawGeckoFontFaceRuleList",
         ];
         for &ty in structs_types.iter() {
             builder = builder.hide_type(ty)
@@ -700,6 +784,8 @@ mod bindings {
         static ref BINDINGS_PATH: PathBuf = Path::new(file!()).parent().unwrap().join("gecko_bindings");
     }
 
+    pub fn setup_logging() {}
+
     pub fn generate_structs(build_type: BuildType) {
         let file = structs_file(build_type);
         let source = BINDINGS_PATH.join(file);
@@ -716,15 +802,22 @@ mod bindings {
 
 pub fn generate() {
     use self::common::*;
-    use std::fs;
-    use std::thread;
+    use std::{env, fs, thread};
+    println!("cargo:rerun-if-changed=build_gecko.rs");
     fs::create_dir_all(&*OUTDIR_PATH).unwrap();
-    let threads = vec![
-        thread::spawn(|| bindings::generate_structs(BuildType::Debug)),
-        thread::spawn(|| bindings::generate_structs(BuildType::Release)),
-        thread::spawn(|| bindings::generate_bindings()),
-    ];
-    for t in threads.into_iter() {
-        t.join().unwrap();
+    bindings::setup_logging();
+    if env::var("STYLO_BUILD_LOG").is_ok() {
+        bindings::generate_structs(BuildType::Debug);
+        bindings::generate_structs(BuildType::Release);
+        bindings::generate_bindings();
+    } else {
+        let threads = vec![
+            thread::spawn(|| bindings::generate_structs(BuildType::Debug)),
+            thread::spawn(|| bindings::generate_structs(BuildType::Release)),
+            thread::spawn(|| bindings::generate_bindings()),
+        ];
+        for t in threads.into_iter() {
+            t.join().unwrap();
+        }
     }
 }

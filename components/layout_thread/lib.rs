@@ -76,8 +76,7 @@ use layout::wrapper::LayoutNodeLayoutData;
 use layout::wrapper::drop_style_and_layout_data;
 use layout_traits::LayoutThreadFactory;
 use msg::constellation_msg::{FrameId, PipelineId};
-use net_traits::image_cache_thread::ImageCacheThread;
-use net_traits::image_cache_thread::UsePlaceholder;
+use net_traits::image_cache::{ImageCache, UsePlaceholder};
 use parking_lot::RwLock;
 use profile_traits::mem::{self, Report, ReportKind, ReportsChan};
 use profile_traits::time::{self, TimerMetadata, profile};
@@ -99,6 +98,7 @@ use servo_url::ServoUrl;
 use std::borrow::ToOwned;
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
+use std::marker::PhantomData;
 use std::mem as std_mem;
 use std::ops::{Deref, DerefMut};
 use std::process;
@@ -110,17 +110,16 @@ use style::animation::Animation;
 use style::context::{QuirksMode, ReflowGoal, SharedStyleContext, ThreadLocalStyleContextCreationInfo};
 use style::data::StoredRestyleHint;
 use style::dom::{ShowSubtree, ShowSubtreeDataAndPrimaryValues, TElement, TNode};
-use style::error_reporting::{ParseErrorReporter, StdoutErrorReporter};
+use style::error_reporting::StdoutErrorReporter;
 use style::logical_geometry::LogicalPoint;
 use style::media_queries::{Device, MediaType};
-use style::parser::ParserContextExtraData;
-use style::properties::ComputedValues;
 use style::servo::restyle_damage::{REFLOW, REFLOW_OUT_OF_FLOW, REPAINT, REPOSITION, STORE_OVERFLOW};
+use style::shared_lock::{SharedRwLock, SharedRwLockReadGuard, StylesheetGuards};
 use style::stylesheets::{Origin, Stylesheet, UserAgentStylesheets};
-use style::stylist::Stylist;
+use style::stylist::{ExtraStyleData, Stylist};
 use style::thread_state;
 use style::timer::Timer;
-use style::traversal::{DomTraversal, TraversalDriver};
+use style::traversal::{DomTraversal, TraversalDriver, TraversalFlags};
 
 /// Information needed by the layout thread.
 pub struct LayoutThread {
@@ -157,8 +156,8 @@ pub struct LayoutThread {
     /// The channel on which messages can be sent to the memory profiler.
     mem_profiler_chan: mem::ProfilerChan,
 
-    /// The channel on which messages can be sent to the image cache.
-    image_cache_thread: ImageCacheThread,
+    /// Reference to the script thread image cache.
+    image_cache: Arc<ImageCache>,
 
     /// Public interface to the font cache thread.
     font_cache_thread: FontCacheThread,
@@ -189,6 +188,9 @@ pub struct LayoutThread {
     /// The root of the flow tree.
     root_flow: Option<FlowRef>,
 
+    /// The document-specific shared lock used for author-origin stylesheets
+    document_shared_lock: Option<SharedRwLock>,
+
     /// The list of currently-running animations.
     running_animations: Arc<RwLock<HashMap<OpaqueNode, Vec<Animation>>>>,
 
@@ -215,7 +217,7 @@ pub struct LayoutThread {
                                               WebRenderImageInfo,
                                               BuildHasherDefault<FnvHasher>>>>,
 
-    // Webrender interface.
+    /// Webrender interface.
     webrender_api: webrender_traits::RenderApi,
 
     /// The timer object to control the timing of the animations. This should
@@ -242,7 +244,7 @@ impl LayoutThreadFactory for LayoutThread {
               pipeline_port: IpcReceiver<LayoutControlMsg>,
               constellation_chan: IpcSender<ConstellationMsg>,
               script_chan: IpcSender<ConstellationControlMsg>,
-              image_cache_thread: ImageCacheThread,
+              image_cache: Arc<ImageCache>,
               font_cache_thread: FontCacheThread,
               time_profiler_chan: time::ProfilerChan,
               mem_profiler_chan: mem::ProfilerChan,
@@ -265,7 +267,7 @@ impl LayoutThreadFactory for LayoutThread {
                                                pipeline_port,
                                                constellation_chan,
                                                script_chan,
-                                               image_cache_thread,
+                                               image_cache.clone(),
                                                font_cache_thread,
                                                time_profiler_chan,
                                                mem_profiler_chan.clone(),
@@ -345,26 +347,31 @@ impl<'a, 'b: 'a> RwData<'a, 'b> {
 }
 
 fn add_font_face_rules(stylesheet: &Stylesheet,
+                       guard: &SharedRwLockReadGuard,
                        device: &Device,
                        font_cache_thread: &FontCacheThread,
                        font_cache_sender: &IpcSender<()>,
                        outstanding_web_fonts_counter: &Arc<AtomicUsize>) {
     if opts::get().load_webfonts_synchronously {
         let (sender, receiver) = ipc::channel().unwrap();
-        stylesheet.effective_font_face_rules(&device, |font_face| {
-            let effective_sources = font_face.effective_sources();
-            font_cache_thread.add_web_font(font_face.family.clone(),
-                                           effective_sources,
-                                           sender.clone());
-            receiver.recv().unwrap();
+        stylesheet.effective_font_face_rules(&device, guard, |rule| {
+            if let Some(font_face) = rule.font_face() {
+                let effective_sources = font_face.effective_sources();
+                font_cache_thread.add_web_font(font_face.family().clone(),
+                                               effective_sources,
+                                               sender.clone());
+                receiver.recv().unwrap();
+            }
         })
     } else {
-        stylesheet.effective_font_face_rules(&device, |font_face| {
-            let effective_sources = font_face.effective_sources();
-            outstanding_web_fonts_counter.fetch_add(1, Ordering::SeqCst);
-            font_cache_thread.add_web_font(font_face.family.clone(),
-                                          effective_sources,
-                                          (*font_cache_sender).clone());
+        stylesheet.effective_font_face_rules(&device, guard, |rule| {
+            if let Some(font_face) = rule.font_face() {
+                let effective_sources = font_face.effective_sources();
+                outstanding_web_fonts_counter.fetch_add(1, Ordering::SeqCst);
+                font_cache_thread.add_web_font(font_face.family().clone(),
+                                              effective_sources,
+                                              (*font_cache_sender).clone());
+            }
         })
     }
 }
@@ -378,7 +385,7 @@ impl LayoutThread {
            pipeline_port: IpcReceiver<LayoutControlMsg>,
            constellation_chan: IpcSender<ConstellationMsg>,
            script_chan: IpcSender<ConstellationControlMsg>,
-           image_cache_thread: ImageCacheThread,
+           image_cache: Arc<ImageCache>,
            font_cache_thread: FontCacheThread,
            time_profiler_chan: time::ProfilerChan,
            mem_profiler_chan: mem::ProfilerChan,
@@ -407,8 +414,11 @@ impl LayoutThread {
 
         let stylist = Arc::new(Stylist::new(device));
         let outstanding_web_fonts_counter = Arc::new(AtomicUsize::new(0));
-        for stylesheet in &*UA_STYLESHEETS.user_or_user_agent_stylesheets {
+        let ua_stylesheets = &*UA_STYLESHEETS;
+        let guard = ua_stylesheets.shared_lock.read();
+        for stylesheet in &ua_stylesheets.user_or_user_agent_stylesheets {
             add_font_face_rules(stylesheet,
+                                &guard,
                                 &stylist.device,
                                 &font_cache_thread,
                                 &ipc_font_cache_sender,
@@ -425,7 +435,7 @@ impl LayoutThread {
             constellation_chan: constellation_chan.clone(),
             time_profiler_chan: time_profiler_chan,
             mem_profiler_chan: mem_profiler_chan,
-            image_cache_thread: image_cache_thread,
+            image_cache: image_cache.clone(),
             font_cache_thread: font_cache_thread,
             first_reflow: true,
             font_cache_receiver: font_cache_receiver,
@@ -437,6 +447,7 @@ impl LayoutThread {
             new_animations_receiver: new_animations_receiver,
             outstanding_web_fonts: outstanding_web_fonts_counter,
             root_flow: None,
+            document_shared_lock: None,
             running_animations: Arc::new(RwLock::new(HashMap::new())),
             expired_animations: Arc::new(RwLock::new(HashMap::new())),
             epoch: Epoch(0),
@@ -494,30 +505,27 @@ impl LayoutThread {
     }
 
     // Create a layout context for use in building display lists, hit testing, &c.
-    fn build_layout_context(&self,
-                            rw_data: &LayoutThreadData,
-                            request_images: bool)
-                            -> LayoutContext {
+    fn build_layout_context<'a>(&self,
+                                guards: StylesheetGuards<'a>,
+                                rw_data: &LayoutThreadData,
+                                request_images: bool)
+                                -> LayoutContext<'a> {
         let thread_local_style_context_creation_data =
             ThreadLocalStyleContextCreationInfo::new(self.new_animations_sender.clone());
 
         LayoutContext {
             style_context: SharedStyleContext {
-                viewport_size: self.viewport_size.clone(),
                 stylist: rw_data.stylist.clone(),
+                guards: guards,
                 running_animations: self.running_animations.clone(),
                 expired_animations: self.expired_animations.clone(),
-                error_reporter: self.error_reporter.clone(),
+                error_reporter: Box::new(self.error_reporter.clone()),
                 local_context_creation_data: Mutex::new(thread_local_style_context_creation_data),
                 timer: self.timer.clone(),
                 quirks_mode: self.quirks_mode.unwrap(),
-                // FIXME(bz): This isn't really right, but it's no more wrong
-                // than what we used to do.  See
-                // https://github.com/servo/servo/issues/14773 for fixing it
-                // properly.
-                default_computed_values: Arc::new(ComputedValues::initial_values().clone()),
+                animation_only_restyle: false,
             },
-            image_cache_thread: Mutex::new(self.image_cache_thread.clone()),
+            image_cache: self.image_cache.clone(),
             font_cache_thread: Mutex::new(self.font_cache_thread.clone()),
             webrender_image_cache: self.webrender_image_cache.clone(),
             pending_images: if request_images { Some(Mutex::new(vec![])) } else { None },
@@ -603,9 +611,6 @@ impl LayoutThread {
                         || self.handle_reflow(&data, possibly_locked_rw_data));
             },
             Msg::TickAnimations => self.tick_all_animations(possibly_locked_rw_data),
-            Msg::ReflowWithNewlyLoadedWebFont => {
-                self.reflow_with_newly_loaded_web_font(possibly_locked_rw_data)
-            }
             Msg::SetStackingContextScrollStates(new_scroll_states) => {
                 self.set_stacking_context_scroll_states(new_scroll_states,
                                                         possibly_locked_rw_data);
@@ -691,7 +696,7 @@ impl LayoutThread {
                              info.pipeline_port,
                              info.constellation_chan,
                              info.script_chan.clone(),
-                             self.image_cache_thread.clone(),
+                             info.image_cache.clone(),
                              self.font_cache_thread.clone(),
                              self.time_profiler_chan.clone(),
                              self.mem_profiler_chan.clone(),
@@ -740,8 +745,10 @@ impl LayoutThread {
         // GWTODO: Need to handle unloading web fonts.
 
         let rw_data = possibly_locked_rw_data.lock();
-        if stylesheet.is_effective_for_device(&rw_data.stylist.device) {
+        let guard = stylesheet.shared_lock.read();
+        if stylesheet.is_effective_for_device(&rw_data.stylist.device, &guard) {
             add_font_face_rules(&*stylesheet,
+                                &guard,
                                 &rw_data.stylist.device,
                                 &self.font_cache_thread,
                                 &self.font_cache_sender,
@@ -774,7 +781,7 @@ impl LayoutThread {
             Some(x) => x,
             None => return None,
         };
-        let result = data.flow_construction_result.swap_out();
+        let result = data.flow_construction_result.get();
 
         let mut flow = match result {
             ConstructionResult::Flow(mut flow, abs_descendants) => {
@@ -928,7 +935,7 @@ impl LayoutThread {
             let Epoch(epoch_number) = self.epoch;
 
             let viewport_size = webrender_traits::LayoutSize::from_untyped(&viewport_size);
-            self.webrender_api.set_root_display_list(
+            self.webrender_api.set_display_list(
                 Some(get_root_flow_background_color(layout_root)),
                 webrender_traits::Epoch(epoch_number),
                 viewport_size,
@@ -1019,8 +1026,13 @@ impl LayoutThread {
                                               Au::from_f32_px(initial_viewport.height));
 
         // Calculate the actual viewport as per DEVICE-ADAPT § 6
+
+        let document_shared_lock = document.style_shared_lock();
+        self.document_shared_lock = Some(document_shared_lock.clone());
+        let author_guard = document_shared_lock.read();
         let device = Device::new(MediaType::Screen, initial_viewport);
-        Arc::get_mut(&mut rw_data.stylist).unwrap().set_device(device, &data.document_stylesheets);
+        Arc::get_mut(&mut rw_data.stylist).unwrap()
+            .set_device(device, &author_guard, &data.document_stylesheets);
 
         self.viewport_size =
             rw_data.stylist.viewport_constraints().map_or(current_screen_size, |constraints| {
@@ -1064,9 +1076,21 @@ impl LayoutThread {
         }
 
         // If the entire flow tree is invalid, then it will be reflowed anyhow.
-        let needs_dirtying = Arc::get_mut(&mut rw_data.stylist).unwrap().update(&data.document_stylesheets,
-                                                                                 Some(&*UA_STYLESHEETS),
-                                                                                 data.stylesheets_changed);
+        let ua_stylesheets = &*UA_STYLESHEETS;
+        let ua_or_user_guard = ua_stylesheets.shared_lock.read();
+        let guards = StylesheetGuards {
+            author: &author_guard,
+            ua_or_user: &ua_or_user_guard,
+        };
+        let mut extra_data = ExtraStyleData {
+            marker: PhantomData,
+        };
+        let needs_dirtying = Arc::get_mut(&mut rw_data.stylist).unwrap().update(
+            &data.document_stylesheets,
+            &guards,
+            Some(ua_stylesheets),
+            data.stylesheets_changed,
+            &mut extra_data);
         let needs_reflow = viewport_size_changed && !needs_dirtying;
         if needs_dirtying {
             if let Some(mut d) = element.mutate_data() {
@@ -1112,7 +1136,7 @@ impl LayoutThread {
         }
 
         // Create a layout context for use throughout the following passes.
-        let mut layout_context = self.build_layout_context(&*rw_data, true);
+        let mut layout_context = self.build_layout_context(guards.clone(), &*rw_data, true);
 
         // NB: Type inference falls apart here for some reason, so we need to be very verbose. :-(
         let traversal_driver = if self.parallel_flag && self.parallel_traversal.is_some() {
@@ -1127,7 +1151,7 @@ impl LayoutThread {
             let stylist = &<RecalcStyleAndConstructFlows as
                             DomTraversal<ServoLayoutElement>>::shared_context(&traversal).stylist;
             <RecalcStyleAndConstructFlows as
-             DomTraversal<ServoLayoutElement>>::pre_traverse(element, stylist, /* skip_root = */ false)
+             DomTraversal<ServoLayoutElement>>::pre_traverse(element, stylist, TraversalFlags::empty())
         };
 
         if token.should_traverse() {
@@ -1171,18 +1195,21 @@ impl LayoutThread {
         }
 
         if opts::get().dump_rule_tree {
-            layout_context.style_context.stylist.rule_tree.dump_stdout();
+            layout_context.style_context.stylist.rule_tree.dump_stdout(&guards);
         }
 
         // GC the rule tree if some heuristics are met.
         unsafe { layout_context.style_context.stylist.rule_tree.maybe_gc(); }
 
         // Perform post-style recalculation layout passes.
-        self.perform_post_style_recalc_layout_passes(&data.reflow_info,
-                                                     Some(&data.query_type),
-                                                     Some(&document),
-                                                     &mut rw_data,
-                                                     &mut layout_context);
+        if let Some(mut root_flow) = self.root_flow.clone() {
+            self.perform_post_style_recalc_layout_passes(&mut root_flow,
+                                                         &data.reflow_info,
+                                                         Some(&data.query_type),
+                                                         Some(&document),
+                                                         &mut rw_data,
+                                                         &mut layout_context);
+        }
 
         self.respond_to_query_if_necessary(&data.query_type,
                                            &mut *rw_data,
@@ -1335,139 +1362,125 @@ impl LayoutThread {
             println!("**** pipeline={}\tForDisplay\tSpecial\tAnimationTick", self.id);
         }
 
-        let reflow_info = Reflow {
-            goal: ReflowGoal::ForDisplay,
-            page_clip_rect: max_rect(),
-        };
-
-        let mut layout_context = self.build_layout_context(&*rw_data, false);
-
         if let Some(mut root_flow) = self.root_flow.clone() {
-            // Perform an abbreviated style recalc that operates without access to the DOM.
-            let animations = self.running_animations.read();
-            profile(time::ProfilerCategory::LayoutStyleRecalc,
-                    self.profiler_metadata(),
-                    self.time_profiler_chan.clone(),
-                    || {
-                        animation::recalc_style_for_animations(&layout_context,
-                                                               FlowRef::deref_mut(&mut root_flow),
-                                                               &animations)
-                    });
+            let reflow_info = Reflow {
+                goal: ReflowGoal::ForDisplay,
+                page_clip_rect: max_rect(),
+            };
+
+            // Unwrap here should not panic since self.root_flow is only ever set to Some(_)
+            // in handle_reflow() where self.document_shared_lock is as well.
+            let author_shared_lock = self.document_shared_lock.clone().unwrap();
+            let author_guard = author_shared_lock.read();
+            let ua_or_user_guard = UA_STYLESHEETS.shared_lock.read();
+            let guards = StylesheetGuards {
+                author: &author_guard,
+                ua_or_user: &ua_or_user_guard,
+            };
+            let mut layout_context = self.build_layout_context(guards, &*rw_data, false);
+
+            {
+                // Perform an abbreviated style recalc that operates without access to the DOM.
+                let animations = self.running_animations.read();
+                profile(time::ProfilerCategory::LayoutStyleRecalc,
+                        self.profiler_metadata(),
+                        self.time_profiler_chan.clone(),
+                        || {
+                            animation::recalc_style_for_animations(
+                                &layout_context, FlowRef::deref_mut(&mut root_flow), &animations)
+                        });
+            }
+            self.perform_post_style_recalc_layout_passes(&mut root_flow,
+                                                         &reflow_info,
+                                                         None,
+                                                         None,
+                                                         &mut *rw_data,
+                                                         &mut layout_context);
+            assert!(layout_context.pending_images.is_none());
         }
-
-        self.perform_post_style_recalc_layout_passes(&reflow_info,
-                                                     None,
-                                                     None,
-                                                     &mut *rw_data,
-                                                     &mut layout_context);
-
-        assert!(layout_context.pending_images.is_none());
-    }
-
-    fn reflow_with_newly_loaded_web_font<'a, 'b>(&mut self, possibly_locked_rw_data: &mut RwData<'a, 'b>) {
-        let mut rw_data = possibly_locked_rw_data.lock();
-        font_context::invalidate_font_caches();
-
-        let reflow_info = Reflow {
-            goal: ReflowGoal::ForDisplay,
-            page_clip_rect: max_rect(),
-        };
-
-        let mut layout_context = self.build_layout_context(&*rw_data, false);
-
-        // No need to do a style recalc here.
-        if self.root_flow.is_none() {
-            return
-        }
-        self.perform_post_style_recalc_layout_passes(&reflow_info,
-                                                     None,
-                                                     None,
-                                                     &mut *rw_data,
-                                                     &mut layout_context);
     }
 
     fn perform_post_style_recalc_layout_passes(&mut self,
+                                               root_flow: &mut FlowRef,
                                                data: &Reflow,
                                                query_type: Option<&ReflowQueryType>,
                                                document: Option<&ServoLayoutDocument>,
                                                rw_data: &mut LayoutThreadData,
                                                context: &mut LayoutContext) {
-        if let Some(mut root_flow) = self.root_flow.clone() {
-            // Kick off animations if any were triggered, expire completed ones.
-            animation::update_animation_state(&self.constellation_chan,
-                                              &self.script_chan,
-                                              &mut *self.running_animations.write(),
-                                              &mut *self.expired_animations.write(),
-                                              &self.new_animations_receiver,
-                                              self.id,
-                                              &self.timer);
+        // Kick off animations if any were triggered, expire completed ones.
+        animation::update_animation_state(&self.constellation_chan,
+                                          &self.script_chan,
+                                          &mut *self.running_animations.write(),
+                                          &mut *self.expired_animations.write(),
+                                          &self.new_animations_receiver,
+                                          self.id,
+                                          &self.timer);
 
-            profile(time::ProfilerCategory::LayoutRestyleDamagePropagation,
+        profile(time::ProfilerCategory::LayoutRestyleDamagePropagation,
+                self.profiler_metadata(),
+                self.time_profiler_chan.clone(),
+                || {
+            // Call `compute_layout_damage` even in non-incremental mode, because it sets flags
+            // that are needed in both incremental and non-incremental traversals.
+            let damage = FlowRef::deref_mut(root_flow).compute_layout_damage();
+
+            if opts::get().nonincremental_layout || damage.contains(REFLOW_ENTIRE_DOCUMENT) {
+                FlowRef::deref_mut(root_flow).reflow_entire_document()
+            }
+        });
+
+        if opts::get().trace_layout {
+            layout_debug::begin_trace(root_flow.clone());
+        }
+
+        // Resolve generated content.
+        profile(time::ProfilerCategory::LayoutGeneratedContent,
+                self.profiler_metadata(),
+                self.time_profiler_chan.clone(),
+                || sequential::resolve_generated_content(FlowRef::deref_mut(root_flow), &context));
+
+        // Guess float placement.
+        profile(time::ProfilerCategory::LayoutFloatPlacementSpeculation,
+                self.profiler_metadata(),
+                self.time_profiler_chan.clone(),
+                || sequential::guess_float_placement(FlowRef::deref_mut(root_flow)));
+
+        // Perform the primary layout passes over the flow tree to compute the locations of all
+        // the boxes.
+        if flow::base(&**root_flow).restyle_damage.intersects(REFLOW | REFLOW_OUT_OF_FLOW) {
+            profile(time::ProfilerCategory::LayoutMain,
                     self.profiler_metadata(),
                     self.time_profiler_chan.clone(),
                     || {
-                // Call `compute_layout_damage` even in non-incremental mode, because it sets flags
-                // that are needed in both incremental and non-incremental traversals.
-                let damage = FlowRef::deref_mut(&mut root_flow).compute_layout_damage();
+                let profiler_metadata = self.profiler_metadata();
 
-                if opts::get().nonincremental_layout || damage.contains(REFLOW_ENTIRE_DOCUMENT) {
-                    FlowRef::deref_mut(&mut root_flow).reflow_entire_document()
+                if let (true, Some(traversal)) = (self.parallel_flag, self.parallel_traversal.as_mut()) {
+                    // Parallel mode.
+                    LayoutThread::solve_constraints_parallel(traversal,
+                                                             FlowRef::deref_mut(root_flow),
+                                                             profiler_metadata,
+                                                             self.time_profiler_chan.clone(),
+                                                             &*context);
+                } else {
+                    //Sequential mode
+                    LayoutThread::solve_constraints(FlowRef::deref_mut(root_flow), &context)
                 }
             });
-
-            if opts::get().trace_layout {
-                layout_debug::begin_trace(root_flow.clone());
-            }
-
-            // Resolve generated content.
-            profile(time::ProfilerCategory::LayoutGeneratedContent,
-                    self.profiler_metadata(),
-                    self.time_profiler_chan.clone(),
-                    || sequential::resolve_generated_content(FlowRef::deref_mut(&mut root_flow), &context));
-
-            // Guess float placement.
-            profile(time::ProfilerCategory::LayoutFloatPlacementSpeculation,
-                    self.profiler_metadata(),
-                    self.time_profiler_chan.clone(),
-                    || sequential::guess_float_placement(FlowRef::deref_mut(&mut root_flow)));
-
-            // Perform the primary layout passes over the flow tree to compute the locations of all
-            // the boxes.
-            if flow::base(&*root_flow).restyle_damage.intersects(REFLOW | REFLOW_OUT_OF_FLOW) {
-                profile(time::ProfilerCategory::LayoutMain,
-                        self.profiler_metadata(),
-                        self.time_profiler_chan.clone(),
-                        || {
-                    let profiler_metadata = self.profiler_metadata();
-
-                    if let (true, Some(traversal)) = (self.parallel_flag, self.parallel_traversal.as_mut()) {
-                        // Parallel mode.
-                        LayoutThread::solve_constraints_parallel(traversal,
-                                                                 FlowRef::deref_mut(&mut root_flow),
-                                                                 profiler_metadata,
-                                                                 self.time_profiler_chan.clone(),
-                                                                 &*context);
-                    } else {
-                        //Sequential mode
-                        LayoutThread::solve_constraints(FlowRef::deref_mut(&mut root_flow), &context)
-                    }
-                });
-            }
-
-            profile(time::ProfilerCategory::LayoutStoreOverflow,
-                    self.profiler_metadata(),
-                    self.time_profiler_chan.clone(),
-                    || {
-                sequential::store_overflow(context,
-                                           FlowRef::deref_mut(&mut root_flow) as &mut Flow);
-            });
-
-            self.perform_post_main_layout_passes(data,
-                                                 query_type,
-                                                 document,
-                                                 rw_data,
-                                                 context);
         }
+
+        profile(time::ProfilerCategory::LayoutStoreOverflow,
+                self.profiler_metadata(),
+                self.time_profiler_chan.clone(),
+                || {
+            sequential::store_overflow(context,
+                                       FlowRef::deref_mut(root_flow) as &mut Flow);
+        });
+
+        self.perform_post_main_layout_passes(data,
+                                             query_type,
+                                             document,
+                                             rw_data,
+                                             context);
     }
 
     fn perform_post_main_layout_passes(&mut self,
@@ -1560,7 +1573,8 @@ fn get_root_flow_background_color(flow: &mut Flow) -> webrender_traits::ColorF {
 }
 
 fn get_ua_stylesheets() -> Result<UserAgentStylesheets, &'static str> {
-    fn parse_ua_stylesheet(filename: &'static str) -> Result<Stylesheet, &'static str> {
+    fn parse_ua_stylesheet(shared_lock: &SharedRwLock, filename: &'static str)
+                           -> Result<Stylesheet, &'static str> {
         let res = try!(read_resource_file(filename).map_err(|_| filename));
         Ok(Stylesheet::from_bytes(
             &res,
@@ -1569,27 +1583,28 @@ fn get_ua_stylesheets() -> Result<UserAgentStylesheets, &'static str> {
             None,
             Origin::UserAgent,
             Default::default(),
+            shared_lock.clone(),
             None,
-            Box::new(StdoutErrorReporter),
-            ParserContextExtraData::default()))
+            &StdoutErrorReporter))
     }
 
+    let shared_lock = SharedRwLock::new();
     let mut user_or_user_agent_stylesheets = vec!();
     // FIXME: presentational-hints.css should be at author origin with zero specificity.
     //        (Does it make a difference?)
     for &filename in &["user-agent.css", "servo.css", "presentational-hints.css"] {
-        user_or_user_agent_stylesheets.push(try!(parse_ua_stylesheet(filename)));
+        user_or_user_agent_stylesheets.push(try!(parse_ua_stylesheet(&shared_lock, filename)));
     }
     for &(ref contents, ref url) in &opts::get().user_stylesheets {
         user_or_user_agent_stylesheets.push(Stylesheet::from_bytes(
             &contents, url.clone(), None, None, Origin::User, Default::default(),
-            None, Box::new(StdoutErrorReporter),
-            ParserContextExtraData::default()));
+            shared_lock.clone(), None, &StdoutErrorReporter));
     }
 
-    let quirks_mode_stylesheet = try!(parse_ua_stylesheet("quirks-mode.css"));
+    let quirks_mode_stylesheet = try!(parse_ua_stylesheet(&shared_lock, "quirks-mode.css"));
 
     Ok(UserAgentStylesheets {
+        shared_lock: shared_lock,
         user_or_user_agent_stylesheets: user_or_user_agent_stylesheets,
         quirks_mode_stylesheet: quirks_mode_stylesheet,
     })

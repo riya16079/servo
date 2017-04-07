@@ -434,6 +434,7 @@ impl StackingContext {
     pub fn to_display_list_items(self) -> (DisplayItem, DisplayItem) {
         let mut base_item = BaseDisplayItem::empty();
         base_item.stacking_context_id = self.id;
+        base_item.scroll_root_id = self.parent_scroll_id;
 
         let pop_item = DisplayItem::PopStackingContext(Box::new(
             PopStackingContextItem {
@@ -507,10 +508,10 @@ pub struct ScrollRoot {
     pub parent_id: ScrollRootId,
 
     /// The position of this scroll root's frame in the parent stacking context.
-    pub clip: Rect<Au>,
+    pub clip: ClippingRegion,
 
-    /// The size of the contents that can be scrolled inside of the scroll root.
-    pub size: Size2D<Au>,
+    /// The rect of the contents that can be scrolled inside of the scroll root.
+    pub content_rect: Rect<Au>,
 }
 
 impl ScrollRoot {
@@ -885,10 +886,7 @@ pub struct IframeDisplayItem {
 
 /// Paints a gradient.
 #[derive(Clone, Deserialize, HeapSizeOf, Serialize)]
-pub struct GradientDisplayItem {
-    /// Fields common to all display items.
-    pub base: BaseDisplayItem,
-
+pub struct Gradient {
     /// The start point of the gradient (computed during display list construction).
     pub start_point: Point2D<Au>,
 
@@ -897,6 +895,15 @@ pub struct GradientDisplayItem {
 
     /// A list of color stops.
     pub stops: Vec<GradientStop>,
+}
+
+#[derive(Clone, Deserialize, HeapSizeOf, Serialize)]
+pub struct GradientDisplayItem {
+    /// Fields common to all display item.
+    pub base: BaseDisplayItem,
+
+    /// Contains all gradient data. Included start, end point and color stops.
+    pub gradient: Gradient,
 }
 
 /// A normal border, supporting CSS border styles.
@@ -938,11 +945,22 @@ pub struct ImageBorder {
     pub repeat_vertical: webrender_traits::RepeatMode,
 }
 
+/// A border that is made of linear gradient
+#[derive(Clone, HeapSizeOf, Deserialize, Serialize)]
+pub struct GradientBorder {
+    /// The gradient info that this border uses, border-image-source.
+    pub gradient: Gradient,
+
+    /// Outsets for the border, as per border-image-outset.
+    pub outset: SideOffsets2D<f32>,
+}
+
 /// Specifies the type of border
 #[derive(Clone, HeapSizeOf, Deserialize, Serialize)]
 pub enum BorderDetails {
     Normal(NormalBorder),
     Image(ImageBorder),
+    Gradient(GradientBorder),
 }
 
 /// Paints a border.
@@ -1222,7 +1240,11 @@ impl fmt::Debug for DisplayItem {
                             solid_color.color.g,
                             solid_color.color.b,
                             solid_color.color.a),
-                DisplayItem::Text(_) => "Text".to_owned(),
+                DisplayItem::Text(ref text) => {
+                    format!("Text ({:?})",
+                            &text.text_run.text[
+                                text.range.begin().0 as usize..(text.range.begin().0 + text.range.length().0) as usize])
+                }
                 DisplayItem::Image(_) => "Image".to_owned(),
                 DisplayItem::WebGL(_) => "WebGL".to_owned(),
                 DisplayItem::Border(_) => "Border".to_owned(),

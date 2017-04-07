@@ -296,6 +296,11 @@ class CommandBase(object):
         if not self.config["tools"]["system-rust"]:
             self.config["tools"]["rust-root"] = path.join(
                 self.context.sharedir, "rust", self.rust_path())
+        if use_stable_rust:
+            # Cargo maintainer's position is that CARGO_INCREMENTAL is a nightly-only feature
+            # and should not be used on the stable channel.
+            # https://github.com/rust-lang/cargo/issues/3835
+            self.config["build"]["incremental"] = False
 
     def use_stable_rust(self):
         return self._use_stable_rust
@@ -377,7 +382,7 @@ class CommandBase(object):
                                   " --release" if release else ""))
         sys.exit()
 
-    def build_env(self, hosts_file_path=None, target=None, is_build=False):
+    def build_env(self, hosts_file_path=None, target=None, is_build=False, geckolib=False):
         """Return an extended environment dictionary."""
         env = os.environ.copy()
         if sys.platform == "win32" and type(env['PATH']) == unicode:
@@ -402,7 +407,7 @@ class CommandBase(object):
             # Link openssl
             env["OPENSSL_INCLUDE_DIR"] = path.join(package_dir("openssl"), "include")
             env["OPENSSL_LIB_DIR"] = path.join(package_dir("openssl"), "lib" + msvc_x64)
-            env["OPENSSL_LIBS"] = "ssleay32MD:libeay32MD"
+            env["OPENSSL_LIBS"] = "libsslMD:libcryptoMD"
             # Link moztools
             env["MOZTOOLS_PATH"] = path.join(package_dir("moztools"), "bin")
 
@@ -513,6 +518,10 @@ class CommandBase(object):
                 git_info.append('dirty')
 
         env['GIT_INFO'] = '-'.join(git_info)
+
+        if geckolib:
+            geckolib_build_path = path.join(self.context.topdir, "target", "geckolib").encode("UTF-8")
+            env["CARGO_TARGET_DIR"] = geckolib_build_path
 
         return env
 

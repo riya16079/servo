@@ -54,7 +54,8 @@ fn is_unrooted_ty(cx: &LateContext, ty: &ty::TyS, in_new_function: bool) -> bool
                         || match_def_path(cx, did.did, &["core", "slice", "Iter"])
                         || match_def_path(cx, did.did, &["std", "collections", "hash", "map", "Entry"])
                         || match_def_path(cx, did.did, &["std", "collections", "hash", "map", "OccupiedEntry"])
-                        || match_def_path(cx, did.did, &["std", "collections", "hash", "map", "VacantEntry"]) {
+                        || match_def_path(cx, did.did, &["std", "collections", "hash", "map", "VacantEntry"])
+                        || match_def_path(cx, did.did, &["std", "collections", "hash", "set", "Iter"]) {
                     // Structures which are semantically similar to an &ptr.
                     false
                 } else if did.is_box() && in_new_function {
@@ -137,7 +138,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnrootedPass {
             visit::FnKind::Closure(_) => return,
         };
 
-        if !in_derive_expn(cx, span) {
+        if !in_derive_expn(span) {
             let def_id = cx.tcx.hir.local_def_id(id);
             let ty = cx.tcx.item_type(def_id);
 

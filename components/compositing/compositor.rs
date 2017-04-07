@@ -9,11 +9,11 @@ use compositor_thread::{InitialCompositorState, Msg, RenderListener};
 use delayed_composition::DelayedCompositionTimerProxy;
 use euclid::Point2D;
 use euclid::point::TypedPoint2D;
+use euclid::rect::TypedRect;
 use euclid::scale_factor::ScaleFactor;
 use euclid::size::TypedSize2D;
-use gfx_traits::{Epoch, FragmentType, ScrollRootId};
+use gfx_traits::{Epoch, ScrollRootId};
 use gleam::gl;
-use gleam::gl::types::{GLint, GLsizei};
 use image::{DynamicImage, ImageFormat, RgbImage};
 use ipc_channel::ipc::{self, IpcSender, IpcSharedMemory};
 use msg::constellation_msg::{Key, KeyModifiers, KeyState, CONTROL};
@@ -39,7 +39,7 @@ use style_traits::viewport::ViewportConstraints;
 use time::{precise_time_ns, precise_time_s};
 use touch::{TouchHandler, TouchAction};
 use webrender;
-use webrender_traits::{self, ScrollEventPhase, ServoScrollRootId, LayoutPoint, ScrollLocation};
+use webrender_traits::{self, LayoutPoint, ScrollEventPhase, ScrollLayerId, ScrollLocation};
 use windowing::{self, MouseWindowEvent, WindowEvent, WindowMethods, WindowNavigateMsg};
 
 #[derive(Debug, PartialEq)]
@@ -76,25 +76,12 @@ trait ConvertScrollRootIdFromWebRender {
     fn from_webrender(&self) -> ScrollRootId;
 }
 
-impl ConvertScrollRootIdFromWebRender for webrender_traits::ServoScrollRootId {
+impl ConvertScrollRootIdFromWebRender for u64 {
     fn from_webrender(&self) -> ScrollRootId {
-        ScrollRootId(self.0)
-    }
-}
-
-trait ConvertFragmentTypeFromWebRender {
-    fn from_webrender(&self) -> FragmentType;
-}
-
-impl ConvertFragmentTypeFromWebRender for webrender_traits::FragmentType {
-    fn from_webrender(&self) -> FragmentType {
-        match *self {
-            webrender_traits::FragmentType::FragmentBody => FragmentType::FragmentBody,
-            webrender_traits::FragmentType::BeforePseudoContent => {
-                FragmentType::BeforePseudoContent
-            }
-            webrender_traits::FragmentType::AfterPseudoContent => FragmentType::AfterPseudoContent,
-        }
+        // This conversion is lossy on 32 bit platforms,
+        // but we only actually use the bottom 32 bits
+        // on Servo anyway.
+        ScrollRootId(*self as usize)
     }
 }
 
@@ -140,8 +127,11 @@ pub struct IOCompositor<Window: WindowMethods> {
     /// The scene scale, to allow for zooming and high-resolution painting.
     scale: ScaleFactor<f32, LayerPixel, DevicePixel>,
 
-    /// The application window size.
-    window_size: TypedSize2D<u32, DevicePixel>,
+    /// The size of the rendering area.
+    frame_size: TypedSize2D<u32, DevicePixel>,
+
+    /// The position and size of the window within the rendering area.
+    window_rect: TypedRect<u32, DevicePixel>,
 
     /// The overridden viewport.
     viewport: Option<(TypedPoint2D<u32, DevicePixel>, TypedSize2D<u32, DevicePixel>)>,
@@ -220,6 +210,9 @@ pub struct IOCompositor<Window: WindowMethods> {
 
     /// The webrender interface, if enabled.
     webrender_api: webrender_traits::RenderApi,
+
+    /// GL functions interface (may be GL or GLES)
+    gl: Rc<gl::Gl>,
 }
 
 #[derive(Copy, Clone)]
@@ -303,34 +296,34 @@ impl RenderTargetInfo {
     }
 }
 
-fn initialize_png(width: usize, height: usize) -> RenderTargetInfo {
-    let framebuffer_ids = gl::gen_framebuffers(1);
-    gl::bind_framebuffer(gl::FRAMEBUFFER, framebuffer_ids[0]);
+fn initialize_png(gl: &gl::Gl, width: usize, height: usize) -> RenderTargetInfo {
+    let framebuffer_ids = gl.gen_framebuffers(1);
+    gl.bind_framebuffer(gl::FRAMEBUFFER, framebuffer_ids[0]);
 
-    let texture_ids = gl::gen_textures(1);
-    gl::bind_texture(gl::TEXTURE_2D, texture_ids[0]);
+    let texture_ids = gl.gen_textures(1);
+    gl.bind_texture(gl::TEXTURE_2D, texture_ids[0]);
 
-    gl::tex_image_2d(gl::TEXTURE_2D, 0, gl::RGB as GLint, width as GLsizei,
-                     height as GLsizei, 0, gl::RGB, gl::UNSIGNED_BYTE, None);
-    gl::tex_parameter_i(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as GLint);
-    gl::tex_parameter_i(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as GLint);
+    gl.tex_image_2d(gl::TEXTURE_2D, 0, gl::RGB as gl::GLint, width as gl::GLsizei,
+                    height as gl::GLsizei, 0, gl::RGB, gl::UNSIGNED_BYTE, None);
+    gl.tex_parameter_i(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as gl::GLint);
+    gl.tex_parameter_i(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as gl::GLint);
 
-    gl::framebuffer_texture_2d(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D,
-                               texture_ids[0], 0);
+    gl.framebuffer_texture_2d(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D,
+                              texture_ids[0], 0);
 
-    gl::bind_texture(gl::TEXTURE_2D, 0);
+    gl.bind_texture(gl::TEXTURE_2D, 0);
 
-    let renderbuffer_ids = gl::gen_renderbuffers(1);
+    let renderbuffer_ids = gl.gen_renderbuffers(1);
     let depth_rb = renderbuffer_ids[0];
-    gl::bind_renderbuffer(gl::RENDERBUFFER, depth_rb);
-    gl::renderbuffer_storage(gl::RENDERBUFFER,
-                             gl::DEPTH_COMPONENT24,
-                             width as gl::GLsizei,
-                             height as gl::GLsizei);
-    gl::framebuffer_renderbuffer(gl::FRAMEBUFFER,
-                                 gl::DEPTH_ATTACHMENT,
-                                 gl::RENDERBUFFER,
-                                 depth_rb);
+    gl.bind_renderbuffer(gl::RENDERBUFFER, depth_rb);
+    gl.renderbuffer_storage(gl::RENDERBUFFER,
+                            gl::DEPTH_COMPONENT24,
+                            width as gl::GLsizei,
+                            height as gl::GLsizei);
+    gl.framebuffer_renderbuffer(gl::FRAMEBUFFER,
+                                gl::DEPTH_ATTACHMENT,
+                                gl::RENDERBUFFER,
+                                depth_rb);
 
     RenderTargetInfo {
         framebuffer_ids: framebuffer_ids,
@@ -376,7 +369,8 @@ impl webrender_traits::RenderDispatcher for CompositorThreadDispatcher {
 impl<Window: WindowMethods> IOCompositor<Window> {
     fn new(window: Rc<Window>, state: InitialCompositorState)
            -> IOCompositor<Window> {
-        let window_size = window.framebuffer_size();
+        let frame_size = window.framebuffer_size();
+        let window_rect = window.window_rect();
         let scale_factor = window.hidpi_factor();
         let composite_target = match opts::get().output_file {
             Some(_) => CompositeTarget::PngFile,
@@ -384,11 +378,13 @@ impl<Window: WindowMethods> IOCompositor<Window> {
         };
 
         IOCompositor {
+            gl: window.gl(),
             window: window,
             port: state.receiver,
             root_pipeline: None,
             pipeline_details: HashMap::new(),
-            window_size: window_size,
+            frame_size: frame_size,
+            window_rect: window_rect,
             scale: ScaleFactor::new(1.0),
             viewport: None,
             scale_factor: scale_factor,
@@ -552,6 +548,13 @@ impl<Window: WindowMethods> IOCompositor<Window> {
                 //
                 // TODO(pcwalton): Specify which frame's load completed.
                 self.window.load_end(back, forward, root);
+            }
+
+            (Msg::AllowNavigation(url, response_chan), ShutdownState::NotShuttingDown) => {
+                let allow = self.window.allow_navigation(url);
+                if let Err(e) = response_chan.send(allow) {
+                    warn!("Failed to send allow_navigation result ({}).", e);
+                }
             }
 
             (Msg::DelayedCompositionTimeout(timestamp), ShutdownState::NotShuttingDown) => {
@@ -756,7 +759,18 @@ impl<Window: WindowMethods> IOCompositor<Window> {
 
     fn send_window_size(&self, size_type: WindowSizeType) {
         let dppx = self.page_zoom * self.hidpi_factor();
-        let initial_viewport = self.window_size.to_f32() / dppx;
+
+        let window_rect = {
+            let offset = webrender_traits::DeviceUintPoint::new(self.window_rect.origin.x, self.window_rect.origin.y);
+            let size = webrender_traits::DeviceUintSize::new(self.window_rect.size.width, self.window_rect.size.height);
+            webrender_traits::DeviceUintRect::new(offset, size)
+        };
+
+        let frame_size = webrender_traits::DeviceUintSize::new(self.frame_size.width, self.frame_size.height);
+        self.webrender_api.set_window_parameters(frame_size, window_rect);
+
+        let initial_viewport = self.window_rect.size.to_f32() / dppx;
+
         let msg = ConstellationMsg::WindowSize(WindowSizeData {
             device_pixel_ratio: dppx,
             initial_viewport: initial_viewport,
@@ -783,10 +797,8 @@ impl<Window: WindowMethods> IOCompositor<Window> {
                                 pipeline_id: PipelineId,
                                 scroll_root_id: ScrollRootId,
                                 point: Point2D<f32>) {
-        self.webrender_api.scroll_layers_with_scroll_root_id(
-            LayoutPoint::from_untyped(&point),
-            pipeline_id.to_webrender(),
-            ServoScrollRootId(scroll_root_id.0));
+        let id = ScrollLayerId::new(scroll_root_id.0 as u64, pipeline_id.to_webrender());
+        self.webrender_api.scroll_layer_with_id(LayoutPoint::from_untyped(&point), id);
     }
 
     fn handle_window_message(&mut self, event: WindowEvent) {
@@ -892,11 +904,16 @@ impl<Window: WindowMethods> IOCompositor<Window> {
             self.update_zoom_transform();
         }
 
-        if self.window_size == new_size {
+        let new_window_rect = self.window.window_rect();
+        let new_frame_size = self.window.framebuffer_size();
+
+        if self.window_rect == new_window_rect &&
+           self.frame_size == new_frame_size {
             return;
         }
 
-        self.window_size = new_size;
+        self.frame_size = new_size;
+        self.window_rect = new_window_rect;
 
         self.send_window_size(WindowSizeType::Resize);
     }
@@ -1321,7 +1338,7 @@ impl<Window: WindowMethods> IOCompositor<Window> {
     }
 
     fn update_page_zoom_for_webrender(&mut self) {
-        let page_zoom = webrender_traits::PageZoomFactor::new(self.page_zoom.get());
+        let page_zoom = webrender_traits::ZoomFactor::new(self.page_zoom.get());
         self.webrender_api.set_page_zoom(page_zoom);
     }
 
@@ -1373,13 +1390,18 @@ impl<Window: WindowMethods> IOCompositor<Window> {
     fn send_viewport_rects(&self) {
         let mut stacking_context_scroll_states_per_pipeline = HashMap::new();
         for scroll_layer_state in self.webrender_api.get_scroll_layer_state() {
+            let external_id = match scroll_layer_state.id.external_id() {
+                Some(id) => id,
+                None => continue,
+            };
+
             let stacking_context_scroll_state = StackingContextScrollState {
-                scroll_root_id: scroll_layer_state.scroll_root_id.from_webrender(),
+                scroll_root_id: external_id.from_webrender(),
                 scroll_offset: scroll_layer_state.scroll_offset.to_untyped(),
             };
-            let pipeline_id = scroll_layer_state.pipeline_id;
+
             stacking_context_scroll_states_per_pipeline
-                .entry(pipeline_id)
+                .entry(scroll_layer_state.id.pipeline_id())
                 .or_insert(vec![])
                 .push(stacking_context_scroll_state);
         }
@@ -1485,7 +1507,7 @@ impl<Window: WindowMethods> IOCompositor<Window> {
                                  target: CompositeTarget)
                                  -> Result<Option<Image>, UnableToComposite> {
         let (width, height) =
-            (self.window_size.width as usize, self.window_size.height as usize);
+            (self.frame_size.width as usize, self.frame_size.height as usize);
         if !self.window.prepare_for_composite(width, height) {
             return Err(UnableToComposite::WindowUnprepared)
         }
@@ -1516,14 +1538,14 @@ impl<Window: WindowMethods> IOCompositor<Window> {
 
         let render_target_info = match target {
             CompositeTarget::Window => RenderTargetInfo::empty(),
-            _ => initialize_png(width, height)
+            _ => initialize_png(&*self.gl, width, height)
         };
 
         profile(ProfilerCategory::Compositing, None, self.time_profiler_chan.clone(), || {
             debug!("compositor: compositing");
 
             // Paint the scene.
-            let size = webrender_traits::DeviceUintSize::from_untyped(&self.window_size.to_untyped());
+            let size = webrender_traits::DeviceUintSize::from_untyped(&self.frame_size.to_untyped());
             self.webrender.render(size);
         });
 
@@ -1580,16 +1602,16 @@ impl<Window: WindowMethods> IOCompositor<Window> {
                 width: usize,
                 height: usize)
                 -> RgbImage {
-        let mut pixels = gl::read_pixels(0, 0,
-                                         width as gl::GLsizei,
-                                         height as gl::GLsizei,
-                                         gl::RGB, gl::UNSIGNED_BYTE);
+        let mut pixels = self.gl.read_pixels(0, 0,
+                                             width as gl::GLsizei,
+                                             height as gl::GLsizei,
+                                             gl::RGB, gl::UNSIGNED_BYTE);
 
-        gl::bind_framebuffer(gl::FRAMEBUFFER, 0);
+        self.gl.bind_framebuffer(gl::FRAMEBUFFER, 0);
 
-        gl::delete_buffers(&render_target_info.texture_ids);
-        gl::delete_renderbuffers(&render_target_info.renderbuffer_ids);
-        gl::delete_frame_buffers(&render_target_info.framebuffer_ids);
+        self.gl.delete_buffers(&render_target_info.texture_ids);
+        self.gl.delete_renderbuffers(&render_target_info.renderbuffer_ids);
+        self.gl.delete_framebuffers(&render_target_info.framebuffer_ids);
 
         // flip image vertically (texture is upside down)
         let orig_pixels = pixels.clone();
@@ -1687,6 +1709,11 @@ impl<Window: WindowMethods> IOCompositor<Window> {
         }
 
         self.shutdown_state != ShutdownState::FinishedShuttingDown
+    }
+
+    pub fn set_webrender_profiler_enabled(&mut self, enabled: bool) {
+        self.webrender.set_profiler_enabled(enabled);
+        self.webrender_api.generate_frame(None);
     }
 
     /// Repaints and recomposites synchronously. You must be careful when calling this, as if a

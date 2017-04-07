@@ -11,7 +11,7 @@ ${helpers.single_keyword("visibility",
                          "visible hidden",
                          extra_gecko_values="collapse",
                          gecko_ffi_name="mVisible",
-                         animatable=True,
+                         animation_type="normal",
                          spec="https://drafts.csswg.org/css-box/#propdef-visibility")}
 
 // CSS Writing Modes Level 3
@@ -20,10 +20,10 @@ ${helpers.single_keyword("writing-mode",
                          "horizontal-tb vertical-rl vertical-lr",
                          experimental=True,
                          need_clone=True,
-                         animatable=False,
+                         animation_type="none",
                          spec="https://drafts.csswg.org/css-writing-modes/#propdef-writing-mode")}
 
-${helpers.single_keyword("direction", "ltr rtl", need_clone=True, animatable=False,
+${helpers.single_keyword("direction", "ltr rtl", need_clone=True, animation_type="none",
                          spec="https://drafts.csswg.org/css-writing-modes/#propdef-direction")}
 
 <%helpers:single_keyword_computed
@@ -32,7 +32,7 @@ ${helpers.single_keyword("direction", "ltr rtl", need_clone=True, animatable=Fal
     extra_specified="sideways-right"
     products="gecko"
     need_clone="True"
-    animatable="False"
+    animation_type="none"
     spec="https://drafts.csswg.org/css-writing-modes/#propdef-text-orientation"
 >
     use values::HasViewportPercentage;
@@ -67,7 +67,7 @@ ${helpers.single_keyword("direction", "ltr rtl", need_clone=True, animatable=Fal
 // https://drafts.csswg.org/css-color/
 ${helpers.single_keyword("color-adjust",
                          "economy exact", products="gecko",
-                         animatable=False,
+                         animation_type="none",
                          spec="https://drafts.csswg.org/css-color/#propdef-color-adjust")}
 
 <% image_rendering_custom_consts = { "crisp-edges": "CRISPEDGES" } %>
@@ -78,13 +78,13 @@ ${helpers.single_keyword("image-rendering",
                          extra_gecko_values="optimizespeed optimizequality",
                          extra_servo_values="pixelated",
                          custom_consts=image_rendering_custom_consts,
-                         animatable=False,
+                         animation_type="none",
                          spec="https://drafts.csswg.org/css-images/#propdef-image-rendering")}
 
 // Image Orientation
 <%helpers:longhand name="image-orientation"
                    products="None"
-                   animatable="False"
+                   animation_type="none"
     spec="https://drafts.csswg.org/css-images/#propdef-image-orientation, \
       /// additional values in https://developer.mozilla.org/en-US/docs/Web/CSS/image-orientation">
     use std::fmt;
@@ -96,7 +96,7 @@ ${helpers.single_keyword("image-rendering",
 
     use std::f32::consts::PI;
     use values::CSSFloat;
-    const TWO_PI: CSSFloat = 2.0*PI;
+    const TWO_PI: CSSFloat = 2.0 * PI;
 
     #[derive(Clone, PartialEq, Copy, Debug)]
     #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
@@ -125,7 +125,7 @@ ${helpers.single_keyword("image-rendering",
     }
 
     pub mod computed_value {
-        use values::specified::Angle;
+        use values::computed::Angle;
 
         #[derive(Clone, PartialEq, Copy, Debug)]
         #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
@@ -135,36 +135,35 @@ ${helpers.single_keyword("image-rendering",
         }
     }
 
-    const INITIAL_ANGLE: Angle = Angle(0.0);
-
     #[inline]
     pub fn get_initial_value() -> computed_value::T {
-        computed_value::T::AngleWithFlipped(INITIAL_ANGLE, false)
+        computed_value::T::AngleWithFlipped(computed::Angle::zero(), false)
     }
 
     // According to CSS Content Module Level 3:
     // The computed value of the property is calculated by rounding the specified angle
     // to the nearest quarter-turn, rounding away from 0, then moduloing the value by 1 turn.
     #[inline]
-    fn normalize_angle(angle: &Angle) -> Angle {
+    fn normalize_angle(angle: &computed::Angle) -> computed::Angle {
         let radians = angle.radians();
         let rounded_quarter_turns = (4.0 * radians / TWO_PI).round();
         let normalized_quarter_turns = (rounded_quarter_turns % 4.0 + 4.0) % 4.0;
         let normalized_radians = normalized_quarter_turns/4.0 * TWO_PI;
-        Angle::from_radians(normalized_radians)
+        computed::Angle::from_radians(normalized_radians)
     }
 
     impl ToComputedValue for SpecifiedValue {
         type ComputedValue = computed_value::T;
 
         #[inline]
-        fn to_computed_value(&self, _: &Context) -> computed_value::T {
+        fn to_computed_value(&self, context: &Context) -> computed_value::T {
             if let Some(ref angle) = self.angle {
-                let normalized_angle = normalize_angle(angle);
+                let angle = angle.to_computed_value(context);
+                let normalized_angle = normalize_angle(&angle);
                 computed_value::T::AngleWithFlipped(normalized_angle, self.flipped)
             } else {
                 if self.flipped {
-                    computed_value::T::AngleWithFlipped(INITIAL_ANGLE, true)
+                    computed_value::T::AngleWithFlipped(computed::Angle::zero(), true)
                 } else {
                     computed_value::T::FromImage
                 }
@@ -175,8 +174,12 @@ ${helpers.single_keyword("image-rendering",
         fn from_computed_value(computed: &computed_value::T) -> Self {
             match *computed {
                 computed_value::T::FromImage => SpecifiedValue { angle: None, flipped: false },
-                computed_value::T::AngleWithFlipped(angle, flipped) =>
-                    SpecifiedValue { angle: Some(angle), flipped: flipped },
+                computed_value::T::AngleWithFlipped(ref angle, flipped) => {
+                    SpecifiedValue {
+                        angle: Some(Angle::from_computed_value(angle)),
+                        flipped: flipped,
+                    }
+                }
             }
         }
     }
@@ -205,7 +208,7 @@ ${helpers.single_keyword("image-rendering",
             let angle = input.try(|input| Angle::parse(context, input)).ok();
             let flipped = input.try(|input| input.expect_ident_matching("flip")).is_ok();
             let explicit_angle = if angle.is_none() && !flipped {
-                Some(INITIAL_ANGLE)
+                Some(Angle::zero())
             } else {
                 angle
             };
@@ -220,7 +223,7 @@ ${helpers.single_keyword("image-rendering",
 <%helpers:longhand name="-servo-under-display-none"
                    derived_from="display"
                    products="servo"
-                   animatable="False"
+                   animation_type="none"
                    spec="Nonstandard (internal layout use only)">
     use std::fmt;
     use style_traits::ToCss;

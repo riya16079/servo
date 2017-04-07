@@ -11,19 +11,21 @@ use app_units::Au;
 use euclid::{Point2D, Rect, SideOffsets2D, Size2D};
 use gfx::display_list::{BorderDetails, BorderRadii, BoxShadowClipMode, ClippingRegion};
 use gfx::display_list::{DisplayItem, DisplayList, DisplayListTraversal, StackingContextType};
-use gfx_traits::{FragmentType, ScrollRootId};
+use gfx_traits::ScrollRootId;
 use msg::constellation_msg::PipelineId;
 use style::computed_values::{image_rendering, mix_blend_mode};
 use style::computed_values::filter::{self, Filter};
 use style::values::computed::BorderStyle;
-use webrender_traits::{self, DisplayListBuilder, ExtendMode, LayoutTransform};
+use webrender_traits::{self, DisplayListBuilder, ExtendMode, LayoutTransform, ScrollLayerId};
 
 pub trait WebRenderDisplayListConverter {
     fn convert_to_webrender(&self, pipeline_id: PipelineId) -> DisplayListBuilder;
 }
 
 trait WebRenderDisplayItemConverter {
-    fn convert_to_webrender(&self, builder: &mut DisplayListBuilder);
+    fn convert_to_webrender(&self,
+                            builder: &mut DisplayListBuilder,
+                            current_scroll_root_id: &mut ScrollRootId);
 }
 
 trait ToBorderStyle {
@@ -198,7 +200,7 @@ impl ToFilterOps for filter::T {
                 Filter::Brightness(amount) => result.push(webrender_traits::FilterOp::Brightness(amount)),
                 Filter::Contrast(amount) => result.push(webrender_traits::FilterOp::Contrast(amount)),
                 Filter::Grayscale(amount) => result.push(webrender_traits::FilterOp::Grayscale(amount)),
-                Filter::HueRotate(angle) => result.push(webrender_traits::FilterOp::HueRotate(angle.0)),
+                Filter::HueRotate(angle) => result.push(webrender_traits::FilterOp::HueRotate(angle.radians())),
                 Filter::Invert(amount) => result.push(webrender_traits::FilterOp::Invert(amount)),
                 Filter::Opacity(amount) => result.push(webrender_traits::FilterOp::Opacity(amount.into())),
                 Filter::Saturate(amount) => result.push(webrender_traits::FilterOp::Saturate(amount)),
@@ -212,16 +214,31 @@ impl ToFilterOps for filter::T {
 impl WebRenderDisplayListConverter for DisplayList {
     fn convert_to_webrender(&self, pipeline_id: PipelineId) -> DisplayListBuilder {
         let traversal = DisplayListTraversal::new(self);
-        let mut builder = DisplayListBuilder::new(pipeline_id.to_webrender());
+        let webrender_pipeline_id = pipeline_id.to_webrender();
+        let mut builder = DisplayListBuilder::new(webrender_pipeline_id);
+
+        let mut current_scroll_root_id = ScrollRootId::root();
+        builder.push_clip_id(current_scroll_root_id.convert_to_webrender(webrender_pipeline_id));
+
         for item in traversal {
-            item.convert_to_webrender(&mut builder);
+            item.convert_to_webrender(&mut builder, &mut current_scroll_root_id);
         }
         builder
     }
 }
 
 impl WebRenderDisplayItemConverter for DisplayItem {
-    fn convert_to_webrender(&self, builder: &mut DisplayListBuilder) {
+    fn convert_to_webrender(&self,
+                            builder: &mut DisplayListBuilder,
+                            current_scroll_root_id: &mut ScrollRootId) {
+        let scroll_root_id = self.base().scroll_root_id;
+        if scroll_root_id != *current_scroll_root_id {
+            let pipeline_id = builder.pipeline_id;
+            builder.pop_clip_id();
+            builder.push_clip_id(scroll_root_id.convert_to_webrender(pipeline_id));
+            *current_scroll_root_id = scroll_root_id;
+        }
+
         match *self {
             DisplayItem::SolidColor(ref item) => {
                 let color = item.color;
@@ -334,21 +351,30 @@ impl WebRenderDisplayItemConverter for DisplayItem {
                             }
                         }
                     }
+                    BorderDetails::Gradient(ref gradient) => {
+                        webrender_traits::BorderDetails::Gradient(webrender_traits::GradientBorder {
+                            gradient: builder.create_gradient(
+                                          gradient.gradient.start_point.to_pointf(),
+                                          gradient.gradient.end_point.to_pointf(),
+                                          gradient.gradient.stops.clone(),
+                                          ExtendMode::Clamp),
+                            outset: gradient.outset,
+                        })
+                    }
                 };
 
                 builder.push_border(rect, clip, widths, details);
             }
             DisplayItem::Gradient(ref item) => {
                 let rect = item.base.bounds.to_rectf();
-                let start_point = item.start_point.to_pointf();
-                let end_point = item.end_point.to_pointf();
+                let start_point = item.gradient.start_point.to_pointf();
+                let end_point = item.gradient.end_point.to_pointf();
                 let clip = item.base.clip.to_clip_region(builder);
-                builder.push_gradient(rect,
-                                      clip,
-                                      start_point,
-                                      end_point,
-                                      item.stops.clone(),
-                                      ExtendMode::Clamp);
+                let gradient = builder.create_gradient(start_point,
+                                                       end_point,
+                                                       item.gradient.stops.clone(),
+                                                       ExtendMode::Clamp);
+                builder.push_gradient(rect, clip, gradient);
             }
             DisplayItem::Line(..) => {
                 println!("TODO DisplayItem::Line");
@@ -377,10 +403,6 @@ impl WebRenderDisplayItemConverter for DisplayItem {
                 let stacking_context = &item.stacking_context;
                 debug_assert!(stacking_context.context_type == StackingContextType::Real);
 
-                let clip = builder.new_clip_region(&stacking_context.overflow.to_rectf(),
-                                                   vec![],
-                                                   None);
-
                 let transform = stacking_context.transform.map(|transform| {
                     LayoutTransform::from_untyped(&transform).into()
                 });
@@ -390,50 +412,35 @@ impl WebRenderDisplayItemConverter for DisplayItem {
 
                 builder.push_stacking_context(stacking_context.scroll_policy,
                                               stacking_context.bounds.to_rectf(),
-                                              clip,
                                               stacking_context.z_index,
                                               transform,
+                                              webrender_traits::TransformStyle::Flat,
                                               perspective,
                                               stacking_context.blend_mode.to_blend_mode(),
                                               stacking_context.filters.to_filter_ops());
             }
             DisplayItem::PopStackingContext(_) => builder.pop_stacking_context(),
             DisplayItem::PushScrollRoot(ref item) => {
-                let clip = builder.new_clip_region(&item.scroll_root.clip.to_rectf(),
-                                                   vec![],
-                                                   None);
-
-                builder.push_scroll_layer(clip,
-                                          item.scroll_root.size.to_sizef(),
-                                          item.scroll_root.id.convert_to_webrender());
+                let our_id = ScrollLayerId::new(item.scroll_root.id.0 as u64, builder.pipeline_id);
+                let clip = item.scroll_root.clip.to_clip_region(builder);
+                let content_rect = item.scroll_root.content_rect.to_rectf();
+                let webrender_id = builder.define_clip(content_rect, clip, Some(our_id));
+                debug_assert!(our_id == webrender_id);
             }
-            DisplayItem::PopScrollRoot(_) => builder.pop_scroll_layer(),
+            DisplayItem::PopScrollRoot(_) => {} //builder.pop_scroll_layer(),
         }
     }
 }
-
 trait WebRenderScrollRootIdConverter {
-    fn convert_to_webrender(&self) -> webrender_traits::ServoScrollRootId;
+    fn convert_to_webrender(&self, pipeline_id: webrender_traits::PipelineId) -> ScrollLayerId;
 }
 
 impl WebRenderScrollRootIdConverter for ScrollRootId {
-    fn convert_to_webrender(&self) -> webrender_traits::ServoScrollRootId {
-        webrender_traits::ServoScrollRootId(self.0)
-    }
-}
-
-trait WebRenderFragmentTypeConverter {
-    fn convert_to_webrender(&self) -> webrender_traits::FragmentType;
-}
-
-impl WebRenderFragmentTypeConverter for FragmentType {
-    fn convert_to_webrender(&self) -> webrender_traits::FragmentType {
-        match *self {
-            FragmentType::FragmentBody => webrender_traits::FragmentType::FragmentBody,
-            FragmentType::BeforePseudoContent => {
-                webrender_traits::FragmentType::BeforePseudoContent
-            }
-            FragmentType::AfterPseudoContent => webrender_traits::FragmentType::AfterPseudoContent,
+    fn convert_to_webrender(&self, pipeline_id: webrender_traits::PipelineId) -> ScrollLayerId {
+        if *self == ScrollRootId::root() {
+            ScrollLayerId::root_scroll_layer(pipeline_id)
+        } else {
+            ScrollLayerId::new(self.0 as u64, pipeline_id)
         }
     }
 }

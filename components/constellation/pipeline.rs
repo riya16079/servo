@@ -16,15 +16,16 @@ use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
 use ipc_channel::router::ROUTER;
 use layout_traits::LayoutThreadFactory;
 use msg::constellation_msg::{FrameId, FrameType, PipelineId, PipelineNamespaceId};
+use net::image_cache::ImageCacheImpl;
 use net_traits::{IpcSend, ResourceThreads};
-use net_traits::image_cache_thread::ImageCacheThread;
+use net_traits::image_cache::ImageCache;
 use profile_traits::mem as profile_mem;
 use profile_traits::time;
 use script_traits::{ConstellationControlMsg, DevicePixel, DiscardBrowsingContext};
 use script_traits::{DocumentActivity, InitialScriptState};
 use script_traits::{LayoutControlMsg, LayoutMsg, LoadData, MozBrowserEvent};
 use script_traits::{NewLayoutInfo, SWManagerMsg, SWManagerSenders, ScriptMsg};
-use script_traits::{ScriptThreadFactory, TimerEventRequest, WindowSizeData};
+use script_traits::{ScriptThreadFactory, TimerSchedulerMsg, WindowSizeData};
 use servo_config::opts::{self, Opts};
 use servo_config::prefs::{PREFS, Pref};
 use servo_url::ServoUrl;
@@ -34,6 +35,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::process;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use style_traits::CSSPixel;
 use webrender_traits;
@@ -119,7 +121,7 @@ pub struct InitialPipelineState {
     pub layout_to_constellation_chan: IpcSender<LayoutMsg>,
 
     /// A channel to schedule timer events.
-    pub scheduler_chan: IpcSender<TimerEventRequest>,
+    pub scheduler_chan: IpcSender<TimerSchedulerMsg>,
 
     /// A channel to the compositor.
     pub compositor_proxy: Box<CompositorProxy + 'static + Send>,
@@ -132,9 +134,6 @@ pub struct InitialPipelineState {
 
     /// A channel to the service worker manager thread
     pub swmanager_thread: IpcSender<SWManagerMsg>,
-
-    /// A channel to the image cache thread.
-    pub image_cache_thread: ImageCacheThread,
 
     /// A channel to the font cache thread.
     pub font_cache_thread: FontCacheThread,
@@ -198,13 +197,15 @@ impl Pipeline {
             }
         });
 
-        let (script_chan, content_ports) = match state.event_loop {
+        let url = state.load_data.url.clone();
+
+        let script_chan = match state.event_loop {
             Some(script_chan) => {
                 let new_layout_info = NewLayoutInfo {
                     parent_info: state.parent_info,
                     new_pipeline_id: state.id,
                     frame_id: state.frame_id,
-                    load_data: state.load_data.clone(),
+                    load_data: state.load_data,
                     window_size: window_size,
                     pipeline_port: pipeline_port,
                     content_process_shutdown_chan: Some(layout_content_process_shutdown_chan.clone()),
@@ -214,75 +215,73 @@ impl Pipeline {
                 if let Err(e) = script_chan.send(ConstellationControlMsg::AttachLayout(new_layout_info)) {
                     warn!("Sending to script during pipeline creation failed ({})", e);
                 }
-                (script_chan, None)
+                script_chan
             }
             None => {
                 let (script_chan, script_port) = ipc::channel().expect("Pipeline script chan");
-                (EventLoop::new(script_chan), Some((script_port, pipeline_port)))
+
+                // Route messages coming from content to devtools as appropriate.
+                let script_to_devtools_chan = state.devtools_chan.as_ref().map(|devtools_chan| {
+                    let (script_to_devtools_chan, script_to_devtools_port) = ipc::channel()
+                        .expect("Pipeline script to devtools chan");
+                    let devtools_chan = (*devtools_chan).clone();
+                    ROUTER.add_route(script_to_devtools_port.to_opaque(), box move |message| {
+                        match message.to::<ScriptToDevtoolsControlMsg>() {
+                            Err(e) => error!("Cast to ScriptToDevtoolsControlMsg failed ({}).", e),
+                            Ok(message) => if let Err(e) = devtools_chan.send(DevtoolsControlMsg::FromScript(message)) {
+                                warn!("Sending to devtools failed ({})", e)
+                            },
+                        }
+                    });
+                    script_to_devtools_chan
+                });
+
+                let (script_content_process_shutdown_chan, script_content_process_shutdown_port) =
+                    ipc::channel().expect("Pipeline script content process shutdown chan");
+
+                let unprivileged_pipeline_content = UnprivilegedPipelineContent {
+                    id: state.id,
+                    frame_id: state.frame_id,
+                    top_level_frame_id: state.top_level_frame_id,
+                    parent_info: state.parent_info,
+                    constellation_chan: state.constellation_chan,
+                    scheduler_chan: state.scheduler_chan,
+                    devtools_chan: script_to_devtools_chan,
+                    bluetooth_thread: state.bluetooth_thread,
+                    swmanager_thread: state.swmanager_thread,
+                    font_cache_thread: state.font_cache_thread,
+                    resource_threads: state.resource_threads,
+                    time_profiler_chan: state.time_profiler_chan,
+                    mem_profiler_chan: state.mem_profiler_chan,
+                    window_size: window_size,
+                    layout_to_constellation_chan: state.layout_to_constellation_chan,
+                    script_chan: script_chan.clone(),
+                    load_data: state.load_data,
+                    script_port: script_port,
+                    opts: (*opts::get()).clone(),
+                    prefs: PREFS.cloned(),
+                    pipeline_port: pipeline_port,
+                    pipeline_namespace_id: state.pipeline_namespace_id,
+                    layout_content_process_shutdown_chan: layout_content_process_shutdown_chan,
+                    layout_content_process_shutdown_port: layout_content_process_shutdown_port,
+                    script_content_process_shutdown_chan: script_content_process_shutdown_chan,
+                    script_content_process_shutdown_port: script_content_process_shutdown_port,
+                    webrender_api_sender: state.webrender_api_sender,
+                    webvr_thread: state.webvr_thread,
+                };
+
+                // Spawn the child process.
+                //
+                // Yes, that's all there is to it!
+                if opts::multiprocess() {
+                    let _ = try!(unprivileged_pipeline_content.spawn_multiprocess());
+                } else {
+                    unprivileged_pipeline_content.start_all::<Message, LTF, STF>(false);
+                }
+
+                EventLoop::new(script_chan)
             }
         };
-
-        if let Some((script_port, pipeline_port)) = content_ports {
-            // Route messages coming from content to devtools as appropriate.
-            let script_to_devtools_chan = state.devtools_chan.as_ref().map(|devtools_chan| {
-                let (script_to_devtools_chan, script_to_devtools_port) = ipc::channel()
-                    .expect("Pipeline script to devtools chan");
-                let devtools_chan = (*devtools_chan).clone();
-                ROUTER.add_route(script_to_devtools_port.to_opaque(), box move |message| {
-                    match message.to::<ScriptToDevtoolsControlMsg>() {
-                        Err(e) => error!("Cast to ScriptToDevtoolsControlMsg failed ({}).", e),
-                        Ok(message) => if let Err(e) = devtools_chan.send(DevtoolsControlMsg::FromScript(message)) {
-                            warn!("Sending to devtools failed ({})", e)
-                        },
-                    }
-                });
-                script_to_devtools_chan
-            });
-
-            let (script_content_process_shutdown_chan, script_content_process_shutdown_port) =
-                ipc::channel().expect("Pipeline script content process shutdown chan");
-
-            let unprivileged_pipeline_content = UnprivilegedPipelineContent {
-                id: state.id,
-                frame_id: state.frame_id,
-                top_level_frame_id: state.top_level_frame_id,
-                parent_info: state.parent_info,
-                constellation_chan: state.constellation_chan,
-                scheduler_chan: state.scheduler_chan,
-                devtools_chan: script_to_devtools_chan,
-                bluetooth_thread: state.bluetooth_thread,
-                swmanager_thread: state.swmanager_thread,
-                image_cache_thread: state.image_cache_thread,
-                font_cache_thread: state.font_cache_thread,
-                resource_threads: state.resource_threads,
-                time_profiler_chan: state.time_profiler_chan,
-                mem_profiler_chan: state.mem_profiler_chan,
-                window_size: window_size,
-                layout_to_constellation_chan: state.layout_to_constellation_chan,
-                script_chan: script_chan.sender(),
-                load_data: state.load_data.clone(),
-                script_port: script_port,
-                opts: (*opts::get()).clone(),
-                prefs: PREFS.cloned(),
-                pipeline_port: pipeline_port,
-                pipeline_namespace_id: state.pipeline_namespace_id,
-                layout_content_process_shutdown_chan: layout_content_process_shutdown_chan,
-                layout_content_process_shutdown_port: layout_content_process_shutdown_port,
-                script_content_process_shutdown_chan: script_content_process_shutdown_chan,
-                script_content_process_shutdown_port: script_content_process_shutdown_port,
-                webrender_api_sender: state.webrender_api_sender,
-                webvr_thread: state.webvr_thread,
-            };
-
-            // Spawn the child process.
-            //
-            // Yes, that's all there is to it!
-            if opts::multiprocess() {
-                let _ = try!(unprivileged_pipeline_content.spawn_multiprocess());
-            } else {
-                unprivileged_pipeline_content.start_all::<Message, LTF, STF>(false);
-            }
-        }
 
         Ok(Pipeline::new(state.id,
                          state.frame_id,
@@ -291,7 +290,7 @@ impl Pipeline {
                          pipeline_chan,
                          state.compositor_proxy,
                          state.is_private,
-                         state.load_data.url,
+                         url,
                          state.window_size,
                          state.prev_visibility.unwrap_or(true)))
     }
@@ -446,11 +445,10 @@ pub struct UnprivilegedPipelineContent {
     parent_info: Option<(PipelineId, FrameType)>,
     constellation_chan: IpcSender<ScriptMsg>,
     layout_to_constellation_chan: IpcSender<LayoutMsg>,
-    scheduler_chan: IpcSender<TimerEventRequest>,
+    scheduler_chan: IpcSender<TimerSchedulerMsg>,
     devtools_chan: Option<IpcSender<ScriptToDevtoolsControlMsg>>,
     bluetooth_thread: IpcSender<BluetoothRequest>,
     swmanager_thread: IpcSender<SWManagerMsg>,
-    image_cache_thread: ImageCacheThread,
     font_cache_thread: FontCacheThread,
     resource_threads: ResourceThreads,
     time_profiler_chan: time::ProfilerChan,
@@ -476,6 +474,7 @@ impl UnprivilegedPipelineContent {
         where LTF: LayoutThreadFactory<Message=Message>,
               STF: ScriptThreadFactory<Message=Message>
     {
+        let image_cache = Arc::new(ImageCacheImpl::new(self.webrender_api_sender.create_api()));
         let layout_pair = STF::create(InitialScriptState {
             id: self.id,
             frame_id: self.frame_id,
@@ -488,7 +487,7 @@ impl UnprivilegedPipelineContent {
             scheduler_chan: self.scheduler_chan,
             bluetooth_thread: self.bluetooth_thread,
             resource_threads: self.resource_threads,
-            image_cache_thread: self.image_cache_thread.clone(),
+            image_cache: image_cache.clone(),
             time_profiler_chan: self.time_profiler_chan.clone(),
             mem_profiler_chan: self.mem_profiler_chan.clone(),
             devtools_chan: self.devtools_chan,
@@ -506,7 +505,7 @@ impl UnprivilegedPipelineContent {
                     self.pipeline_port,
                     self.layout_to_constellation_chan,
                     self.script_chan,
-                    self.image_cache_thread,
+                    image_cache.clone(),
                     self.font_cache_thread,
                     self.time_profiler_chan,
                     self.mem_profiler_chan,

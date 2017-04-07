@@ -11,11 +11,11 @@ ${helpers.single_keyword("dominant-baseline",
                  """auto use-script no-change reset-size ideographic alphabetic hanging
                     mathematical central middle text-after-edge text-before-edge""",
                  products="gecko",
-                 animatable=False,
+                 animation_type="none",
                  spec="https://www.w3.org/TR/SVG11/text.html#DominantBaselineProperty")}
 
 ${helpers.single_keyword("vector-effect", "none non-scaling-stroke",
-                         products="gecko", animatable=False,
+                         products="gecko", animation_type="none",
                          spec="https://www.w3.org/TR/SVGTiny12/painting.html#VectorEffectProperty")}
 
 // Section 13 - Gradients and Patterns
@@ -24,12 +24,12 @@ ${helpers.predefined_type(
     "stop-color", "CSSColor",
     "CSSParserColor::RGBA(RGBA::new(0, 0, 0, 255))",
     products="gecko",
-    animatable=False,
+    animation_type="none",
     spec="https://www.w3.org/TR/SVGTiny12/painting.html#StopColorProperty")}
 
 ${helpers.predefined_type("stop-opacity", "Opacity", "1.0",
                           products="gecko",
-                          animatable=False,
+                          animation_type="none",
                           spec="https://www.w3.org/TR/SVGTiny12/painting.html#propdef-stop-opacity")}
 
 // Section 15 - Filter Effects
@@ -38,27 +38,28 @@ ${helpers.predefined_type(
     "flood-color", "CSSColor",
     "CSSParserColor::RGBA(RGBA::new(0, 0, 0, 255))",
     products="gecko",
-    animatable=False,
+    animation_type="none",
     spec="https://www.w3.org/TR/SVG/filters.html#FloodColorProperty")}
 
 ${helpers.predefined_type("flood-opacity", "Opacity",
-                          "1.0", products="gecko", animatable=False,
+                          "1.0", products="gecko", animation_type="none",
                           spec="https://www.w3.org/TR/SVG/filters.html#FloodOpacityProperty")}
 
 ${helpers.predefined_type(
     "lighting-color", "CSSColor",
     "CSSParserColor::RGBA(RGBA::new(255, 255, 255, 255))",
     products="gecko",
-    animatable=False,
+    animation_type="none",
     spec="https://www.w3.org/TR/SVG/filters.html#LightingColorProperty")}
 
 // CSS Masking Module Level 1
 // https://drafts.fxtf.org/css-masking
 ${helpers.single_keyword("mask-type", "luminance alpha",
-                         products="gecko", animatable=False,
+                         products="gecko", animation_type="none",
                          spec="https://drafts.fxtf.org/css-masking/#propdef-mask-type")}
 
-<%helpers:longhand name="clip-path" animatable="False" products="gecko" boxed="True"
+<%helpers:longhand name="clip-path" animation_type="none" products="gecko" boxed="True"
+                   creates_stacking_context="True"
                    spec="https://drafts.fxtf.org/css-masking/#propdef-clip-path">
     use std::fmt;
     use style_traits::ToCss;
@@ -87,23 +88,32 @@ ${helpers.single_keyword("mask-type", "luminance alpha",
 </%helpers:longhand>
 
 ${helpers.single_keyword("mask-mode",
-                         "alpha luminance match-source",
+                         "match-source alpha luminance",
                          vector=True,
                          products="gecko",
-                         animatable=False,
+                         animation_type="none",
                          spec="https://drafts.fxtf.org/css-masking/#propdef-mask-mode")}
 
-// TODO implement all of repeat-style for background and mask
-// https://drafts.csswg.org/css-backgrounds-3/#repeat-style
-${helpers.single_keyword("mask-repeat",
-                         "repeat repeat-x repeat-y space round no-repeat",
-                         vector=True,
-                         products="gecko",
-                         extra_prefixes="webkit",
-                         animatable=False,
-                         spec="https://drafts.fxtf.org/css-masking/#propdef-mask-repeat")}
+<%helpers:vector_longhand name="mask-repeat" products="gecko" animation_type="none" extra_prefixes="webkit"
+                          spec="https://drafts.fxtf.org/css-masking/#propdef-mask-repeat">
+    pub use properties::longhands::background_repeat::single_value::parse;
+    pub use properties::longhands::background_repeat::single_value::SpecifiedValue;
+    pub use properties::longhands::background_repeat::single_value::computed_value;
+    pub use properties::longhands::background_repeat::single_value::RepeatKeyword;
+    use properties::longhands::background_repeat::single_value;
 
-<%helpers:vector_longhand name="mask-position-x" products="gecko" animatable="True" extra_prefixes="webkit"
+    #[inline]
+    pub fn get_initial_value() -> computed_value::T {
+        computed_value::T(RepeatKeyword::NoRepeat, RepeatKeyword::NoRepeat)
+    }
+
+    #[inline]
+    pub fn get_initial_specified_value() -> SpecifiedValue {
+        SpecifiedValue::Other(RepeatKeyword::NoRepeat, None)
+    }
+</%helpers:vector_longhand>
+
+<%helpers:vector_longhand name="mask-position-x" products="gecko" animation_type="normal" extra_prefixes="webkit"
                           spec="https://drafts.fxtf.org/css-masking/#propdef-mask-position">
     pub use properties::longhands::background_position_x::single_value::get_initial_value;
     pub use properties::longhands::background_position_x::single_value::get_initial_position_value;
@@ -124,7 +134,7 @@ ${helpers.single_keyword("mask-repeat",
     impl RepeatableListInterpolate for MaskPositionX {}
 </%helpers:vector_longhand>
 
-<%helpers:vector_longhand name="mask-position-y" products="gecko" animatable="True" extra_prefixes="webkit"
+<%helpers:vector_longhand name="mask-position-y" products="gecko" animation_type="normal" extra_prefixes="webkit"
                           spec="https://drafts.fxtf.org/css-masking/#propdef-mask-position">
     pub use properties::longhands::background_position_y::single_value::get_initial_value;
     pub use properties::longhands::background_position_y::single_value::get_initial_position_value;
@@ -146,24 +156,24 @@ ${helpers.single_keyword("mask-repeat",
 </%helpers:vector_longhand>
 
 ${helpers.single_keyword("mask-clip",
-                         "content-box padding-box border-box",
+                         "border-box content-box padding-box",
                          extra_gecko_values="fill-box stroke-box view-box no-clip",
                          vector=True,
                          products="gecko",
                          extra_prefixes="webkit",
-                         animatable=False,
+                         animation_type="none",
                          spec="https://drafts.fxtf.org/css-masking/#propdef-mask-clip")}
 
 ${helpers.single_keyword("mask-origin",
-                         "content-box padding-box border-box",
+                         "border-box content-box padding-box",
                          extra_gecko_values="fill-box stroke-box view-box",
                          vector=True,
                          products="gecko",
                          extra_prefixes="webkit",
-                         animatable=False,
+                         animation_type="none",
                          spec="https://drafts.fxtf.org/css-masking/#propdef-mask-origin")}
 
-<%helpers:longhand name="mask-size" products="gecko" animatable="True" extra_prefixes="webkit"
+<%helpers:longhand name="mask-size" products="gecko" animation_type="normal" extra_prefixes="webkit"
                    spec="https://drafts.fxtf.org/css-masking/#propdef-mask-size">
     use properties::longhands::background_size;
     pub use ::properties::longhands::background_size::SpecifiedValue;
@@ -185,11 +195,12 @@ ${helpers.single_keyword("mask-composite",
                          vector=True,
                          products="gecko",
                          extra_prefixes="webkit",
-                         animatable=False,
+                         animation_type="none",
                          spec="https://drafts.fxtf.org/css-masking/#propdef-mask-composite")}
 
-<%helpers:vector_longhand name="mask-image" products="gecko" animatable="False" extra_prefixes="webkit"
-                          has_uncacheable_values="${product == 'gecko'}",
+<%helpers:vector_longhand name="mask-image" products="gecko" animation_type="none" extra_prefixes="webkit"
+                          has_uncacheable_values="${product == 'gecko'}"
+                          creates_stacking_context="True"
                           spec="https://drafts.fxtf.org/css-masking/#propdef-mask-image">
     use std::fmt;
     use style_traits::ToCss;
@@ -257,12 +268,7 @@ ${helpers.single_keyword("mask-composite",
             let image = try!(Image::parse(context, input));
             match image {
                 Image::Url(url_value) => {
-                    let has_valid_url = match url_value.url() {
-                        Some(url) => url.fragment().is_some(),
-                        None => false,
-                    };
-
-                    if has_valid_url {
+                    if url_value.is_fragment() {
                         Ok(SpecifiedValue::Url(url_value))
                     } else {
                         Ok(SpecifiedValue::Image(Image::Url(url_value)))

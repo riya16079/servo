@@ -4,21 +4,26 @@ pub use nsstring::{nsACString, nsAString, nsString};
 type nsACString_internal = nsACString;
 type nsAString_internal = nsAString;
 use gecko_bindings::structs::mozilla::css::URLValue;
+use gecko_bindings::structs::RawGeckoAnimationPropertySegment;
+use gecko_bindings::structs::RawGeckoComputedTiming;
 use gecko_bindings::structs::RawGeckoDocument;
 use gecko_bindings::structs::RawGeckoElement;
 use gecko_bindings::structs::RawGeckoKeyframeList;
 use gecko_bindings::structs::RawGeckoComputedKeyframeValuesList;
+use gecko_bindings::structs::RawGeckoFontFaceRuleList;
 use gecko_bindings::structs::RawGeckoNode;
 use gecko_bindings::structs::RawGeckoAnimationValueList;
 use gecko_bindings::structs::RawServoAnimationValue;
+use gecko_bindings::structs::RawServoAnimationValueMap;
 use gecko_bindings::structs::RawServoDeclarationBlock;
 use gecko_bindings::structs::RawGeckoPresContext;
 use gecko_bindings::structs::RawGeckoPresContextOwned;
+use gecko_bindings::structs::RawGeckoStyleAnimationList;
+use gecko_bindings::structs::RawGeckoURLExtraData;
 use gecko_bindings::structs::RefPtr;
-use gecko_bindings::structs::ThreadSafeURIHolder;
-use gecko_bindings::structs::ThreadSafePrincipalHolder;
 use gecko_bindings::structs::CSSPseudoClassType;
 use gecko_bindings::structs::TraversalRootBehavior;
+use gecko_bindings::structs::ComputedTimingFunction_BeforeFlag;
 use gecko_bindings::structs::FontFamilyList;
 use gecko_bindings::structs::FontFamilyType;
 use gecko_bindings::structs::Keyframe;
@@ -28,9 +33,11 @@ use gecko_bindings::structs::SheetParsingMode;
 use gecko_bindings::structs::StyleBasicShape;
 use gecko_bindings::structs::StyleBasicShapeType;
 use gecko_bindings::structs::StyleShapeSource;
+use gecko_bindings::structs::nsCSSFontFaceRule;
 use gecko_bindings::structs::nsCSSKeyword;
 use gecko_bindings::structs::nsCSSPropertyID;
 use gecko_bindings::structs::nsCSSShadowArray;
+use gecko_bindings::structs::nsCSSUnit;
 use gecko_bindings::structs::nsCSSValue;
 use gecko_bindings::structs::nsCSSValueSharedList;
 use gecko_bindings::structs::nsChangeHint;
@@ -54,6 +61,12 @@ unsafe impl Sync for nsStyleColumn {}
 use gecko_bindings::structs::nsStyleContent;
 unsafe impl Send for nsStyleContent {}
 unsafe impl Sync for nsStyleContent {}
+use gecko_bindings::structs::nsStyleContentData;
+unsafe impl Send for nsStyleContentData {}
+unsafe impl Sync for nsStyleContentData {}
+use gecko_bindings::structs::nsStyleContentType;
+unsafe impl Send for nsStyleContentType {}
+unsafe impl Sync for nsStyleContentType {}
 use gecko_bindings::structs::nsStyleContext;
 unsafe impl Send for nsStyleContext {}
 unsafe impl Sync for nsStyleContext {}
@@ -166,7 +179,7 @@ use gecko_bindings::structs::nsresult;
 use gecko_bindings::structs::Loader;
 use gecko_bindings::structs::ServoStyleSheet;
 use gecko_bindings::structs::EffectCompositor_CascadeLevel;
-use gecko_bindings::structs::RawServoAnimationValueBorrowedListBorrowed;
+use gecko_bindings::structs::UpdateAnimationsTasks;
 pub type nsTArrayBorrowed_uintptr_t<'a> = &'a mut ::gecko_bindings::structs::nsTArray<usize>;
 pub type ServoCssRulesStrong = ::gecko_bindings::sugar::ownership::Strong<ServoCssRules>;
 pub type ServoCssRulesBorrowed<'a> = &'a ServoCssRules;
@@ -199,6 +212,24 @@ pub struct RawServoImportRule(RawServoImportRuleVoid);
 pub type RawServoAnimationValueStrong = ::gecko_bindings::sugar::ownership::Strong<RawServoAnimationValue>;
 pub type RawServoAnimationValueBorrowed<'a> = &'a RawServoAnimationValue;
 pub type RawServoAnimationValueBorrowedOrNull<'a> = Option<&'a RawServoAnimationValue>;
+pub type RawServoAnimationValueMapStrong = ::gecko_bindings::sugar::ownership::Strong<RawServoAnimationValueMap>;
+pub type RawServoAnimationValueMapBorrowed<'a> = &'a RawServoAnimationValueMap;
+pub type RawServoAnimationValueMapBorrowedOrNull<'a> = Option<&'a RawServoAnimationValueMap>;
+pub type RawServoMediaListStrong = ::gecko_bindings::sugar::ownership::Strong<RawServoMediaList>;
+pub type RawServoMediaListBorrowed<'a> = &'a RawServoMediaList;
+pub type RawServoMediaListBorrowedOrNull<'a> = Option<&'a RawServoMediaList>;
+enum RawServoMediaListVoid { }
+pub struct RawServoMediaList(RawServoMediaListVoid);
+pub type RawServoMediaRuleStrong = ::gecko_bindings::sugar::ownership::Strong<RawServoMediaRule>;
+pub type RawServoMediaRuleBorrowed<'a> = &'a RawServoMediaRule;
+pub type RawServoMediaRuleBorrowedOrNull<'a> = Option<&'a RawServoMediaRule>;
+enum RawServoMediaRuleVoid { }
+pub struct RawServoMediaRule(RawServoMediaRuleVoid);
+pub type RawServoNamespaceRuleStrong = ::gecko_bindings::sugar::ownership::Strong<RawServoNamespaceRule>;
+pub type RawServoNamespaceRuleBorrowed<'a> = &'a RawServoNamespaceRule;
+pub type RawServoNamespaceRuleBorrowedOrNull<'a> = Option<&'a RawServoNamespaceRule>;
+enum RawServoNamespaceRuleVoid { }
+pub struct RawServoNamespaceRule(RawServoNamespaceRuleVoid);
 pub type RawServoStyleSetOwned = ::gecko_bindings::sugar::ownership::Owned<RawServoStyleSet>;
 pub type RawServoStyleSetOwnedOrNull = ::gecko_bindings::sugar::ownership::OwnedOrNull<RawServoStyleSet>;
 pub type RawServoStyleSetBorrowed<'a> = &'a RawServoStyleSet;
@@ -231,14 +262,28 @@ pub type RawServoDeclarationBlockStrongBorrowed<'a> = &'a RawServoDeclarationBlo
 pub type RawServoDeclarationBlockStrongBorrowedOrNull<'a> = Option<&'a RawServoDeclarationBlockStrong>;
 pub type RawGeckoPresContextBorrowed<'a> = &'a RawGeckoPresContext;
 pub type RawGeckoPresContextBorrowedOrNull<'a> = Option<&'a RawGeckoPresContext>;
+pub type RawGeckoStyleAnimationListBorrowed<'a> = &'a RawGeckoStyleAnimationList;
+pub type RawGeckoStyleAnimationListBorrowedOrNull<'a> = Option<&'a RawGeckoStyleAnimationList>;
 pub type nsCSSValueBorrowed<'a> = &'a nsCSSValue;
 pub type nsCSSValueBorrowedOrNull<'a> = Option<&'a nsCSSValue>;
 pub type nsCSSValueBorrowedMut<'a> = &'a mut nsCSSValue;
 pub type nsCSSValueBorrowedMutOrNull<'a> = Option<&'a mut nsCSSValue>;
+pub type nsTimingFunctionBorrowed<'a> = &'a nsTimingFunction;
+pub type nsTimingFunctionBorrowedOrNull<'a> = Option<&'a nsTimingFunction>;
+pub type nsTimingFunctionBorrowedMut<'a> = &'a mut nsTimingFunction;
+pub type nsTimingFunctionBorrowedMutOrNull<'a> = Option<&'a mut nsTimingFunction>;
+pub type RawGeckoAnimationPropertySegmentBorrowed<'a> = &'a RawGeckoAnimationPropertySegment;
+pub type RawGeckoAnimationPropertySegmentBorrowedOrNull<'a> = Option<&'a RawGeckoAnimationPropertySegment>;
+pub type RawGeckoAnimationPropertySegmentBorrowedMut<'a> = &'a mut RawGeckoAnimationPropertySegment;
+pub type RawGeckoAnimationPropertySegmentBorrowedMutOrNull<'a> = Option<&'a mut RawGeckoAnimationPropertySegment>;
 pub type RawGeckoAnimationValueListBorrowed<'a> = &'a RawGeckoAnimationValueList;
 pub type RawGeckoAnimationValueListBorrowedOrNull<'a> = Option<&'a RawGeckoAnimationValueList>;
 pub type RawGeckoAnimationValueListBorrowedMut<'a> = &'a mut RawGeckoAnimationValueList;
 pub type RawGeckoAnimationValueListBorrowedMutOrNull<'a> = Option<&'a mut RawGeckoAnimationValueList>;
+pub type RawGeckoComputedTimingBorrowed<'a> = &'a RawGeckoComputedTiming;
+pub type RawGeckoComputedTimingBorrowedOrNull<'a> = Option<&'a RawGeckoComputedTiming>;
+pub type RawGeckoComputedTimingBorrowedMut<'a> = &'a mut RawGeckoComputedTiming;
+pub type RawGeckoComputedTimingBorrowedMutOrNull<'a> = Option<&'a mut RawGeckoComputedTiming>;
 pub type RawGeckoKeyframeListBorrowed<'a> = &'a RawGeckoKeyframeList;
 pub type RawGeckoKeyframeListBorrowedOrNull<'a> = Option<&'a RawGeckoKeyframeList>;
 pub type RawGeckoKeyframeListBorrowedMut<'a> = &'a mut RawGeckoKeyframeList;
@@ -247,6 +292,10 @@ pub type RawGeckoComputedKeyframeValuesListBorrowed<'a> = &'a RawGeckoComputedKe
 pub type RawGeckoComputedKeyframeValuesListBorrowedOrNull<'a> = Option<&'a RawGeckoComputedKeyframeValuesList>;
 pub type RawGeckoComputedKeyframeValuesListBorrowedMut<'a> = &'a mut RawGeckoComputedKeyframeValuesList;
 pub type RawGeckoComputedKeyframeValuesListBorrowedMutOrNull<'a> = Option<&'a mut RawGeckoComputedKeyframeValuesList>;
+pub type RawGeckoFontFaceRuleListBorrowed<'a> = &'a RawGeckoFontFaceRuleList;
+pub type RawGeckoFontFaceRuleListBorrowedOrNull<'a> = Option<&'a RawGeckoFontFaceRuleList>;
+pub type RawGeckoFontFaceRuleListBorrowedMut<'a> = &'a mut RawGeckoFontFaceRuleList;
+pub type RawGeckoFontFaceRuleListBorrowedMutOrNull<'a> = Option<&'a mut RawGeckoFontFaceRuleList>;
 
 extern "C" {
     pub fn Gecko_EnsureTArrayCapacity(aArray: *mut ::std::os::raw::c_void,
@@ -301,21 +350,33 @@ extern "C" {
     pub fn Servo_AnimationValue_Release(ptr: RawServoAnimationValueBorrowed);
 }
 extern "C" {
+    pub fn Servo_AnimationValueMap_AddRef(ptr:
+                                              RawServoAnimationValueMapBorrowed);
+}
+extern "C" {
+    pub fn Servo_AnimationValueMap_Release(ptr:
+                                               RawServoAnimationValueMapBorrowed);
+}
+extern "C" {
+    pub fn Servo_MediaList_AddRef(ptr: RawServoMediaListBorrowed);
+}
+extern "C" {
+    pub fn Servo_MediaList_Release(ptr: RawServoMediaListBorrowed);
+}
+extern "C" {
+    pub fn Servo_MediaRule_AddRef(ptr: RawServoMediaRuleBorrowed);
+}
+extern "C" {
+    pub fn Servo_MediaRule_Release(ptr: RawServoMediaRuleBorrowed);
+}
+extern "C" {
+    pub fn Servo_NamespaceRule_AddRef(ptr: RawServoNamespaceRuleBorrowed);
+}
+extern "C" {
+    pub fn Servo_NamespaceRule_Release(ptr: RawServoNamespaceRuleBorrowed);
+}
+extern "C" {
     pub fn Servo_StyleSet_Drop(ptr: RawServoStyleSetOwned);
-}
-extern "C" {
-    pub fn Gecko_AddRefPrincipalArbitraryThread(aPtr:
-                                                    *mut ThreadSafePrincipalHolder);
-}
-extern "C" {
-    pub fn Gecko_ReleasePrincipalArbitraryThread(aPtr:
-                                                     *mut ThreadSafePrincipalHolder);
-}
-extern "C" {
-    pub fn Gecko_AddRefURIArbitraryThread(aPtr: *mut ThreadSafeURIHolder);
-}
-extern "C" {
-    pub fn Gecko_ReleaseURIArbitraryThread(aPtr: *mut ThreadSafeURIHolder);
 }
 extern "C" {
     pub fn Gecko_ChildrenCount(node: RawGeckoNodeBorrowed) -> u32;
@@ -329,6 +390,11 @@ extern "C" {
 extern "C" {
     pub fn Gecko_FlattenedTreeParentIsParent(node: RawGeckoNodeBorrowed)
      -> bool;
+}
+extern "C" {
+    pub fn Gecko_IsSignificantChild(node: RawGeckoNodeBorrowed,
+                                    text_is_significant: bool,
+                                    whitespace_is_significant: bool) -> bool;
 }
 extern "C" {
     pub fn Gecko_GetParentNode(node: RawGeckoNodeBorrowed)
@@ -373,7 +439,8 @@ extern "C" {
 extern "C" {
     pub fn Gecko_LoadStyleSheet(loader: *mut Loader,
                                 parent: *mut ServoStyleSheet,
-                                import_rule: RawServoImportRuleBorrowed,
+                                child_sheet: RawServoStyleSheetBorrowed,
+                                base_url_data: *mut RawGeckoURLExtraData,
                                 url_bytes: *const u8, url_length: u32,
                                 media_bytes: *const u8, media_length: u32);
 }
@@ -389,19 +456,10 @@ extern "C" {
      -> RawGeckoNodeBorrowedOrNull;
 }
 extern "C" {
-    pub fn Gecko_ElementState(element: RawGeckoElementBorrowed) -> u16;
-}
-extern "C" {
-    pub fn Gecko_IsLink(element: RawGeckoElementBorrowed) -> bool;
+    pub fn Gecko_ElementState(element: RawGeckoElementBorrowed) -> u64;
 }
 extern "C" {
     pub fn Gecko_IsTextNode(node: RawGeckoNodeBorrowed) -> bool;
-}
-extern "C" {
-    pub fn Gecko_IsVisitedLink(element: RawGeckoElementBorrowed) -> bool;
-}
-extern "C" {
-    pub fn Gecko_IsUnvisitedLink(element: RawGeckoElementBorrowed) -> bool;
 }
 extern "C" {
     pub fn Gecko_IsRootElement(element: RawGeckoElementBorrowed) -> bool;
@@ -418,6 +476,10 @@ extern "C" {
 }
 extern "C" {
     pub fn Gecko_GetElementId(element: RawGeckoElementBorrowed)
+     -> *mut nsIAtom;
+}
+extern "C" {
+    pub fn Gecko_GetXMLLangValue(element: RawGeckoElementBorrowed)
      -> *mut nsIAtom;
 }
 extern "C" {
@@ -524,11 +586,62 @@ extern "C" {
      -> RawServoDeclarationBlockStrongBorrowedOrNull;
 }
 extern "C" {
+    pub fn Gecko_GetExtraContentStyleDeclarations(element:
+                                                      RawGeckoElementBorrowed)
+     -> RawServoDeclarationBlockStrongBorrowedOrNull;
+}
+extern "C" {
     pub fn Gecko_GetAnimationRule(aElement: RawGeckoElementBorrowed,
                                   aPseudoTag: *mut nsIAtom,
                                   aCascadeLevel:
-                                      EffectCompositor_CascadeLevel)
-     -> RawServoDeclarationBlockStrong;
+                                      EffectCompositor_CascadeLevel,
+                                  aAnimationValues:
+                                      RawServoAnimationValueMapBorrowed)
+     -> bool;
+}
+extern "C" {
+    pub fn Gecko_StyleAnimationsEquals(arg1:
+                                           RawGeckoStyleAnimationListBorrowed,
+                                       arg2:
+                                           RawGeckoStyleAnimationListBorrowed)
+     -> bool;
+}
+extern "C" {
+    pub fn Gecko_UpdateAnimations(aElement: RawGeckoElementBorrowed,
+                                  aPseudoTagOrNull: *mut nsIAtom,
+                                  aComputedValues:
+                                      ServoComputedValuesBorrowedOrNull,
+                                  aParentComputedValues:
+                                      ServoComputedValuesBorrowedOrNull,
+                                  aTaskBits: UpdateAnimationsTasks);
+}
+extern "C" {
+    pub fn Gecko_ElementHasAnimations(aElement: RawGeckoElementBorrowed,
+                                      aPseudoTagOrNull: *mut nsIAtom) -> bool;
+}
+extern "C" {
+    pub fn Gecko_ElementHasCSSAnimations(aElement: RawGeckoElementBorrowed,
+                                         aPseudoTagOrNull: *mut nsIAtom)
+     -> bool;
+}
+extern "C" {
+    pub fn Gecko_GetProgressFromComputedTiming(aComputedTiming:
+                                                   RawGeckoComputedTimingBorrowed)
+     -> f64;
+}
+extern "C" {
+    pub fn Gecko_GetPositionInSegment(aSegment:
+                                          RawGeckoAnimationPropertySegmentBorrowed,
+                                      aProgress: f64,
+                                      aBeforeFlag:
+                                          ComputedTimingFunction_BeforeFlag)
+     -> f64;
+}
+extern "C" {
+    pub fn Gecko_AnimationGetBaseStyle(aBaseStyles:
+                                           *mut ::std::os::raw::c_void,
+                                       aProperty: nsCSSPropertyID)
+     -> RawServoAnimationValueBorrowedOrNull;
 }
 extern "C" {
     pub fn Gecko_Atomize(aString: *const ::std::os::raw::c_char, aLength: u32)
@@ -560,7 +673,8 @@ extern "C" {
 }
 extern "C" {
     pub fn Gecko_FontFamilyList_AppendNamed(aList: *mut FontFamilyList,
-                                            aName: *mut nsIAtom);
+                                            aName: *mut nsIAtom,
+                                            aQuoted: bool);
 }
 extern "C" {
     pub fn Gecko_FontFamilyList_AppendGeneric(list: *mut FontFamilyList,
@@ -585,14 +699,14 @@ extern "C" {
 }
 extern "C" {
     pub fn Gecko_SetUrlImageValue(image: *mut nsStyleImage,
-                                  url_bytes: *const u8, url_length: u32,
-                                  base_uri: *mut ThreadSafeURIHolder,
-                                  referrer: *mut ThreadSafeURIHolder,
-                                  principal: *mut ThreadSafePrincipalHolder);
+                                  uri: ServoBundledURI);
 }
 extern "C" {
     pub fn Gecko_CopyImageValueFrom(image: *mut nsStyleImage,
                                     other: *const nsStyleImage);
+}
+extern "C" {
+    pub fn Gecko_InitializeImageCropRect(image: *mut nsStyleImage);
 }
 extern "C" {
     pub fn Gecko_CreateGradient(shape: u8, size: u8, repeating: bool,
@@ -616,14 +730,19 @@ extern "C" {
 }
 extern "C" {
     pub fn Gecko_SetCursorImage(cursor: *mut nsCursorImage,
-                                string_bytes: *const u8, string_length: u32,
-                                base_uri: *mut ThreadSafeURIHolder,
-                                referrer: *mut ThreadSafeURIHolder,
-                                principal: *mut ThreadSafePrincipalHolder);
+                                uri: ServoBundledURI);
 }
 extern "C" {
     pub fn Gecko_CopyCursorArrayFrom(dest: *mut nsStyleUserInterface,
                                      src: *const nsStyleUserInterface);
+}
+extern "C" {
+    pub fn Gecko_SetContentDataImage(content_data: *mut nsStyleContentData,
+                                     uri: ServoBundledURI);
+}
+extern "C" {
+    pub fn Gecko_SetContentDataArray(content_data: *mut nsStyleContentData,
+                                     type_: nsStyleContentType, len: u32);
 }
 extern "C" {
     pub fn Gecko_GetNodeFlags(node: RawGeckoNodeBorrowed) -> u32;
@@ -664,8 +783,24 @@ extern "C" {
                                              how_many: u32);
 }
 extern "C" {
+    pub fn Gecko_ClearAndResizeCounterIncrements(content: *mut nsStyleContent,
+                                                 how_many: u32);
+}
+extern "C" {
+    pub fn Gecko_ClearAndResizeCounterResets(content: *mut nsStyleContent,
+                                             how_many: u32);
+}
+extern "C" {
     pub fn Gecko_CopyStyleContentsFrom(content: *mut nsStyleContent,
                                        other: *const nsStyleContent);
+}
+extern "C" {
+    pub fn Gecko_CopyCounterResetsFrom(content: *mut nsStyleContent,
+                                       other: *const nsStyleContent);
+}
+extern "C" {
+    pub fn Gecko_CopyCounterIncrementsFrom(content: *mut nsStyleContent,
+                                           other: *const nsStyleContent);
 }
 extern "C" {
     pub fn Gecko_EnsureImageLayersLength(layers: *mut nsStyleImageLayers,
@@ -677,6 +812,22 @@ extern "C" {
     pub fn Gecko_EnsureStyleAnimationArrayLength(array:
                                                      *mut ::std::os::raw::c_void,
                                                  len: usize);
+}
+extern "C" {
+    pub fn Gecko_EnsureStyleTransitionArrayLength(array:
+                                                      *mut ::std::os::raw::c_void,
+                                                  len: usize);
+}
+extern "C" {
+    pub fn Gecko_ClearWillChange(display: *mut nsStyleDisplay, length: usize);
+}
+extern "C" {
+    pub fn Gecko_AppendWillChange(display: *mut nsStyleDisplay,
+                                  atom: *mut nsIAtom);
+}
+extern "C" {
+    pub fn Gecko_CopyWillChangeFrom(dest: *mut nsStyleDisplay,
+                                    src: *mut nsStyleDisplay);
 }
 extern "C" {
     pub fn Gecko_AnimationAppendKeyframe(keyframes:
@@ -748,6 +899,14 @@ extern "C" {
 }
 extern "C" {
     pub fn Gecko_ReleaseCSSURLValueArbitraryThread(aPtr: *mut URLValue);
+}
+extern "C" {
+    pub fn Gecko_AddRefURLExtraDataArbitraryThread(aPtr:
+                                                       *mut RawGeckoURLExtraData);
+}
+extern "C" {
+    pub fn Gecko_ReleaseURLExtraDataArbitraryThread(aPtr:
+                                                        *mut RawGeckoURLExtraData);
 }
 extern "C" {
     pub fn Gecko_FillAllBackgroundLists(layers: *mut nsStyleImageLayers,
@@ -822,6 +981,9 @@ extern "C" {
                                             len: nscoord);
 }
 extern "C" {
+    pub fn Gecko_CSSValue_SetNormal(css_value: nsCSSValueBorrowedMut);
+}
+extern "C" {
     pub fn Gecko_CSSValue_SetNumber(css_value: nsCSSValueBorrowedMut,
                                     number: f32);
 }
@@ -847,7 +1009,13 @@ extern "C" {
 }
 extern "C" {
     pub fn Gecko_CSSValue_SetString(css_value: nsCSSValueBorrowedMut,
-                                    string: nsString);
+                                    string: *const u8, len: u32,
+                                    unit: nsCSSUnit);
+}
+extern "C" {
+    pub fn Gecko_CSSValue_SetStringFromAtom(css_value: nsCSSValueBorrowedMut,
+                                            atom: *mut nsIAtom,
+                                            unit: nsCSSUnit);
 }
 extern "C" {
     pub fn Gecko_CSSValue_SetArray(css_value: nsCSSValueBorrowedMut,
@@ -858,12 +1026,8 @@ extern "C" {
                                  uri: ServoBundledURI);
 }
 extern "C" {
-    pub fn Gecko_CSSValue_SetLocal(css_value: nsCSSValueBorrowedMut,
-                                   family: nsString);
-}
-extern "C" {
-    pub fn Gecko_CSSValue_SetInteger(css_value: nsCSSValueBorrowedMut,
-                                     integer: i32);
+    pub fn Gecko_CSSValue_SetInt(css_value: nsCSSValueBorrowedMut,
+                                 integer: i32, unit: nsCSSUnit);
 }
 extern "C" {
     pub fn Gecko_CSSValue_Drop(css_value: nsCSSValueBorrowedMut);
@@ -888,7 +1052,42 @@ extern "C" {
                                           aSource: *const nsStyleFont);
 }
 extern "C" {
+    pub fn Gecko_nsStyleFont_GetBaseSize(font: *const nsStyleFont,
+                                         pres_context:
+                                             RawGeckoPresContextBorrowed)
+     -> nscoord;
+}
+extern "C" {
     pub fn Gecko_GetMediaFeatures() -> *const nsMediaFeature;
+}
+extern "C" {
+    pub fn Gecko_CSSFontFaceRule_Create() -> *mut nsCSSFontFaceRule;
+}
+extern "C" {
+    pub fn Gecko_CSSFontFaceRule_GetCssText(rule: *const nsCSSFontFaceRule,
+                                            result: *mut nsAString);
+}
+extern "C" {
+    pub fn Gecko_CSSFontFaceRule_AddRef(aPtr: *mut nsCSSFontFaceRule);
+}
+extern "C" {
+    pub fn Gecko_CSSFontFaceRule_Release(aPtr: *mut nsCSSFontFaceRule);
+}
+extern "C" {
+    pub fn Gecko_GetBody(pres_context: RawGeckoPresContextBorrowed)
+     -> RawGeckoElementBorrowedOrNull;
+}
+extern "C" {
+    pub fn Gecko_GetLookAndFeelSystemColor(color_id: i32,
+                                           pres_context:
+                                               RawGeckoPresContextBorrowed)
+     -> nscolor;
+}
+extern "C" {
+    pub fn Gecko_MatchStringArgPseudo(element: RawGeckoElementBorrowed,
+                                      type_: CSSPseudoClassType,
+                                      ident: *const u16,
+                                      set_slow_selector: *mut bool) -> bool;
 }
 extern "C" {
     pub fn Gecko_Construct_Default_nsStyleFont(ptr: *mut nsStyleFont,
@@ -1206,14 +1405,10 @@ extern "C" {
     pub fn Servo_StyleSheet_FromUTF8Bytes(loader: *mut Loader,
                                           gecko_stylesheet:
                                               *mut ServoStyleSheet,
-                                          data: *const nsACString_internal,
+                                          data: *const nsACString,
                                           parsing_mode: SheetParsingMode,
-                                          base_url:
-                                              *const nsACString_internal,
-                                          base: *mut ThreadSafeURIHolder,
-                                          referrer: *mut ThreadSafeURIHolder,
-                                          principal:
-                                              *mut ThreadSafePrincipalHolder)
+                                          extra_data:
+                                              *mut RawGeckoURLExtraData)
      -> RawServoStyleSheetStrong;
 }
 extern "C" {
@@ -1226,11 +1421,9 @@ extern "C" {
                                            loader: *mut Loader,
                                            gecko_stylesheet:
                                                *mut ServoStyleSheet,
-                                           data: *const nsACString_internal,
-                                           base: *mut ThreadSafeURIHolder,
-                                           referrer: *mut ThreadSafeURIHolder,
-                                           principal:
-                                               *mut ThreadSafePrincipalHolder);
+                                           data: *const nsACString,
+                                           extra_data:
+                                               *mut RawGeckoURLExtraData);
 }
 extern "C" {
     pub fn Servo_StyleSheet_HasRules(sheet: RawServoStyleSheetBorrowed)
@@ -1280,10 +1473,9 @@ extern "C" {
 }
 extern "C" {
     pub fn Servo_StyleSet_FillKeyframesForName(set: RawServoStyleSetBorrowed,
-                                               property:
-                                                   *const nsACString_internal,
+                                               property: *const nsACString,
                                                timing_function:
-                                                   *const nsTimingFunction,
+                                                   nsTimingFunctionBorrowed,
                                                computed_values:
                                                    ServoComputedValuesBorrowed,
                                                keyframe_list:
@@ -1291,19 +1483,20 @@ extern "C" {
      -> bool;
 }
 extern "C" {
+    pub fn Servo_StyleSet_GetFontFaceRules(set: RawServoStyleSetBorrowed,
+                                           list:
+                                               RawGeckoFontFaceRuleListBorrowedMut);
+}
+extern "C" {
     pub fn Servo_CssRules_ListTypes(rules: ServoCssRulesBorrowed,
                                     result: nsTArrayBorrowed_uintptr_t);
 }
 extern "C" {
-    pub fn Servo_CssRules_GetStyleRuleAt(rules: ServoCssRulesBorrowed,
-                                         index: u32)
-     -> RawServoStyleRuleStrong;
-}
-extern "C" {
     pub fn Servo_CssRules_InsertRule(rules: ServoCssRulesBorrowed,
                                      sheet: RawServoStyleSheetBorrowed,
-                                     rule: *const nsACString_internal,
-                                     index: u32, nested: bool,
+                                     rule: *const nsACString, index: u32,
+                                     nested: bool, loader: *mut Loader,
+                                     gecko_stylesheet: *mut ServoStyleSheet,
                                      rule_type: *mut u16) -> nsresult;
 }
 extern "C" {
@@ -1311,8 +1504,48 @@ extern "C" {
      -> nsresult;
 }
 extern "C" {
+    pub fn Servo_CssRules_GetStyleRuleAt(rules: ServoCssRulesBorrowed,
+                                         index: u32)
+     -> RawServoStyleRuleStrong;
+}
+extern "C" {
     pub fn Servo_StyleRule_Debug(rule: RawServoStyleRuleBorrowed,
-                                 result: *mut nsACString_internal);
+                                 result: *mut nsACString);
+}
+extern "C" {
+    pub fn Servo_StyleRule_GetCssText(rule: RawServoStyleRuleBorrowed,
+                                      result: *mut nsAString);
+}
+extern "C" {
+    pub fn Servo_CssRules_GetMediaRuleAt(rules: ServoCssRulesBorrowed,
+                                         index: u32)
+     -> RawServoMediaRuleStrong;
+}
+extern "C" {
+    pub fn Servo_MediaRule_Debug(rule: RawServoMediaRuleBorrowed,
+                                 result: *mut nsACString);
+}
+extern "C" {
+    pub fn Servo_MediaRule_GetCssText(rule: RawServoMediaRuleBorrowed,
+                                      result: *mut nsAString);
+}
+extern "C" {
+    pub fn Servo_CssRules_GetNamespaceRuleAt(rules: ServoCssRulesBorrowed,
+                                             index: u32)
+     -> RawServoNamespaceRuleStrong;
+}
+extern "C" {
+    pub fn Servo_NamespaceRule_Debug(rule: RawServoNamespaceRuleBorrowed,
+                                     result: *mut nsACString);
+}
+extern "C" {
+    pub fn Servo_NamespaceRule_GetCssText(rule: RawServoNamespaceRuleBorrowed,
+                                          result: *mut nsAString);
+}
+extern "C" {
+    pub fn Servo_CssRules_GetFontFaceRuleAt(rules: ServoCssRulesBorrowed,
+                                            index: u32)
+     -> *mut nsCSSFontFaceRule;
 }
 extern "C" {
     pub fn Servo_StyleRule_GetStyle(rule: RawServoStyleRuleBorrowed)
@@ -1324,21 +1557,35 @@ extern "C" {
                                         RawServoDeclarationBlockBorrowed);
 }
 extern "C" {
-    pub fn Servo_StyleRule_GetCssText(rule: RawServoStyleRuleBorrowed,
-                                      result: *mut nsAString_internal);
-}
-extern "C" {
     pub fn Servo_StyleRule_GetSelectorText(rule: RawServoStyleRuleBorrowed,
-                                           result: *mut nsAString_internal);
+                                           result: *mut nsAString);
 }
 extern "C" {
-    pub fn Servo_ParseProperty(property: *const nsACString_internal,
-                               value: *const nsACString_internal,
-                               base_url: *const nsACString_internal,
-                               base: *mut ThreadSafeURIHolder,
-                               referrer: *mut ThreadSafeURIHolder,
-                               principal: *mut ThreadSafePrincipalHolder)
+    pub fn Servo_MediaRule_GetMedia(rule: RawServoMediaRuleBorrowed)
+     -> RawServoMediaListStrong;
+}
+extern "C" {
+    pub fn Servo_MediaRule_GetRules(rule: RawServoMediaRuleBorrowed)
+     -> ServoCssRulesStrong;
+}
+extern "C" {
+    pub fn Servo_NamespaceRule_GetPrefix(rule: RawServoNamespaceRuleBorrowed)
+     -> *mut nsIAtom;
+}
+extern "C" {
+    pub fn Servo_NamespaceRule_GetURI(rule: RawServoNamespaceRuleBorrowed)
+     -> *mut nsIAtom;
+}
+extern "C" {
+    pub fn Servo_ParseProperty(property: *const nsACString,
+                               value: *const nsACString,
+                               data: *mut RawGeckoURLExtraData)
      -> RawServoDeclarationBlockStrong;
+}
+extern "C" {
+    pub fn Servo_ParseEasing(easing: *const nsAString,
+                             data: *mut RawGeckoURLExtraData,
+                             output: nsTimingFunctionBorrowedMut) -> bool;
 }
 extern "C" {
     pub fn Servo_GetComputedKeyframeValues(keyframes:
@@ -1346,10 +1593,23 @@ extern "C" {
                                            style: ServoComputedValuesBorrowed,
                                            parent_style:
                                                ServoComputedValuesBorrowedOrNull,
-                                           pres_context:
-                                               RawGeckoPresContextBorrowed,
+                                           set: RawServoStyleSetBorrowed,
                                            result:
                                                RawGeckoComputedKeyframeValuesListBorrowedMut);
+}
+extern "C" {
+    pub fn Servo_AnimationValueMap_Push(arg1:
+                                            RawServoAnimationValueMapBorrowed,
+                                        property: nsCSSPropertyID,
+                                        value:
+                                            RawServoAnimationValueBorrowed);
+}
+extern "C" {
+    pub fn Servo_ComputedValues_ExtractAnimationValue(computed_values:
+                                                          ServoComputedValuesBorrowed,
+                                                      property:
+                                                          nsCSSPropertyID)
+     -> RawServoAnimationValueStrong;
 }
 extern "C" {
     pub fn Servo_AnimationValues_Interpolate(from:
@@ -1360,15 +1620,10 @@ extern "C" {
      -> RawServoAnimationValueStrong;
 }
 extern "C" {
-    pub fn Servo_AnimationValues_Uncompute(value:
-                                               RawServoAnimationValueBorrowedListBorrowed)
-     -> RawServoDeclarationBlockStrong;
-}
-extern "C" {
     pub fn Servo_AnimationValue_Serialize(value:
                                               RawServoAnimationValueBorrowed,
                                           property: nsCSSPropertyID,
-                                          buffer: *mut nsAString_internal);
+                                          buffer: *mut nsAString);
 }
 extern "C" {
     pub fn Servo_AnimationValue_GetOpacity(value:
@@ -1389,7 +1644,8 @@ extern "C" {
      -> bool;
 }
 extern "C" {
-    pub fn Servo_ParseStyleAttribute(data: *const nsACString_internal)
+    pub fn Servo_ParseStyleAttribute(data: *const nsACString,
+                                     extra_data: *mut RawGeckoURLExtraData)
      -> RawServoDeclarationBlockStrong;
 }
 extern "C" {
@@ -1409,14 +1665,13 @@ extern "C" {
 extern "C" {
     pub fn Servo_DeclarationBlock_GetCssText(declarations:
                                                  RawServoDeclarationBlockBorrowed,
-                                             result: *mut nsAString_internal);
+                                             result: *mut nsAString);
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_SerializeOneValue(declarations:
                                                         RawServoDeclarationBlockBorrowed,
                                                     property: nsCSSPropertyID,
-                                                    buffer:
-                                                        *mut nsAString_internal);
+                                                    buffer: *mut nsAString);
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_Count(declarations:
@@ -1427,60 +1682,69 @@ extern "C" {
     pub fn Servo_DeclarationBlock_GetNthProperty(declarations:
                                                      RawServoDeclarationBlockBorrowed,
                                                  index: u32,
-                                                 result:
-                                                     *mut nsAString_internal)
+                                                 result: *mut nsAString)
      -> bool;
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_GetPropertyValue(declarations:
                                                        RawServoDeclarationBlockBorrowed,
                                                    property:
-                                                       *const nsACString_internal,
-                                                   value:
-                                                       *mut nsAString_internal);
+                                                       *const nsACString,
+                                                   value: *mut nsAString);
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_GetPropertyValueById(declarations:
                                                            RawServoDeclarationBlockBorrowed,
                                                        property:
                                                            nsCSSPropertyID,
-                                                       value:
-                                                           *mut nsAString_internal);
+                                                       value: *mut nsAString);
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_GetPropertyIsImportant(declarations:
                                                              RawServoDeclarationBlockBorrowed,
                                                          property:
-                                                             *const nsACString_internal)
+                                                             *const nsACString)
      -> bool;
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_SetProperty(declarations:
                                                   RawServoDeclarationBlockBorrowed,
-                                              property:
-                                                  *const nsACString_internal,
-                                              value: *mut nsACString_internal,
-                                              is_important: bool) -> bool;
+                                              property: *const nsACString,
+                                              value: *const nsACString,
+                                              is_important: bool,
+                                              data: *mut RawGeckoURLExtraData)
+     -> bool;
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_SetPropertyById(declarations:
                                                       RawServoDeclarationBlockBorrowed,
                                                   property: nsCSSPropertyID,
-                                                  value:
-                                                      *mut nsACString_internal,
-                                                  is_important: bool) -> bool;
+                                                  value: *const nsACString,
+                                                  is_important: bool,
+                                                  data:
+                                                      *mut RawGeckoURLExtraData)
+     -> bool;
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_RemoveProperty(declarations:
                                                      RawServoDeclarationBlockBorrowed,
-                                                 property:
-                                                     *const nsACString_internal);
+                                                 property: *const nsACString);
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_RemovePropertyById(declarations:
                                                          RawServoDeclarationBlockBorrowed,
                                                      property:
                                                          nsCSSPropertyID);
+}
+extern "C" {
+    pub fn Servo_AnimationCompose(animation_values:
+                                      RawServoAnimationValueMapBorrowed,
+                                  base_values: *mut ::std::os::raw::c_void,
+                                  property: nsCSSPropertyID,
+                                  animation_segment:
+                                      RawGeckoAnimationPropertySegmentBorrowed,
+                                  computed_timing:
+                                      RawGeckoComputedTimingBorrowed);
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_PropertyIsSet(declarations:
@@ -1538,24 +1802,49 @@ extern "C" {
 extern "C" {
     pub fn Servo_DeclarationBlock_SetFontFamily(declarations:
                                                     RawServoDeclarationBlockBorrowed,
-                                                value:
-                                                    *const nsAString_internal);
+                                                value: *const nsAString);
 }
 extern "C" {
     pub fn Servo_DeclarationBlock_SetTextDecorationColorOverride(declarations:
                                                                      RawServoDeclarationBlockBorrowed);
 }
 extern "C" {
-    pub fn Servo_CSSSupports2(name: *const nsACString_internal,
-                              value: *const nsACString_internal) -> bool;
+    pub fn Servo_MediaList_GetText(list: RawServoMediaListBorrowed,
+                                   result: *mut nsAString);
 }
 extern "C" {
-    pub fn Servo_CSSSupports(cond: *const nsACString_internal) -> bool;
+    pub fn Servo_MediaList_SetText(list: RawServoMediaListBorrowed,
+                                   text: *const nsACString);
+}
+extern "C" {
+    pub fn Servo_MediaList_GetLength(list: RawServoMediaListBorrowed) -> u32;
+}
+extern "C" {
+    pub fn Servo_MediaList_GetMediumAt(list: RawServoMediaListBorrowed,
+                                       index: u32, result: *mut nsAString)
+     -> bool;
+}
+extern "C" {
+    pub fn Servo_MediaList_AppendMedium(list: RawServoMediaListBorrowed,
+                                        new_medium: *const nsACString);
+}
+extern "C" {
+    pub fn Servo_MediaList_DeleteMedium(list: RawServoMediaListBorrowed,
+                                        old_medium: *const nsACString)
+     -> bool;
+}
+extern "C" {
+    pub fn Servo_CSSSupports2(name: *const nsACString,
+                              value: *const nsACString) -> bool;
+}
+extern "C" {
+    pub fn Servo_CSSSupports(cond: *const nsACString) -> bool;
 }
 extern "C" {
     pub fn Servo_ComputedValues_GetForAnonymousBox(parent_style_or_null:
                                                        ServoComputedValuesBorrowedOrNull,
                                                    pseudoTag: *mut nsIAtom,
+                                                   skip_display_fixup: bool,
                                                    set:
                                                        RawServoStyleSetBorrowed)
      -> ServoComputedValuesStrong;
@@ -1567,7 +1856,7 @@ extern "C" {
      -> ServoComputedValuesStrong;
 }
 extern "C" {
-    pub fn Servo_Initialize();
+    pub fn Servo_Initialize(dummy_url_data: *mut RawGeckoURLExtraData);
 }
 extern "C" {
     pub fn Servo_Shutdown();
@@ -1587,8 +1876,8 @@ extern "C" {
 }
 extern "C" {
     pub fn Servo_ResolveStyle(element: RawGeckoElementBorrowed,
-                              set: RawServoStyleSetBorrowed)
-     -> ServoComputedValuesStrong;
+                              set: RawServoStyleSetBorrowed,
+                              allow_stale: bool) -> ServoComputedValuesStrong;
 }
 extern "C" {
     pub fn Servo_ResolvePseudoStyle(element: RawGeckoElementBorrowed,
@@ -1610,6 +1899,15 @@ extern "C" {
 }
 extern "C" {
     pub fn Servo_AssertTreeIsClean(root: RawGeckoElementBorrowed);
+}
+extern "C" {
+    pub fn Servo_StyleSet_GetBaseComputedValuesForElement(set:
+                                                              RawServoStyleSetBorrowed,
+                                                          element:
+                                                              RawGeckoElementBorrowed,
+                                                          pseudo_tag:
+                                                              *mut nsIAtom)
+     -> ServoComputedValuesStrong;
 }
 extern "C" {
     pub fn Servo_GetStyleFont(computed_values:

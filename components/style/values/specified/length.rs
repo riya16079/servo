@@ -19,7 +19,7 @@ use style_traits::values::specified::AllowedNumericType;
 use super::{Angle, Number, SimplifiedValueNode, SimplifiedSumNode, Time};
 use values::{Auto, CSSFloat, Either, FONT_MEDIUM_PX, HasViewportPercentage, None_, Normal};
 use values::ExtremumLength;
-use values::computed::Context;
+use values::computed::{ComputedValueAsSpecified, Context};
 
 pub use super::image::{AngleOrCorner, ColorStop, EndingShape as GradientEndingShape, Gradient};
 pub use super::image::{GradientKind, HorizontalDirection, Image, LengthOrKeyword, LengthOrPercentageOrKeyword};
@@ -32,6 +32,14 @@ const AU_PER_MM: CSSFloat = AU_PER_IN / 25.4;
 const AU_PER_Q: CSSFloat = AU_PER_MM / 4.;
 const AU_PER_PT: CSSFloat = AU_PER_IN / 72.;
 const AU_PER_PC: CSSFloat = AU_PER_PT * 12.;
+
+/// Same as Gecko's AppUnitsToIntCSSPixels
+///
+/// Converts app units to integer pixel values,
+/// rounding during the conversion
+pub fn au_to_int_px(au: f32) -> i32 {
+    (au / AU_PER_PX).round() as i32
+}
 
 #[derive(Clone, PartialEq, Copy, Debug)]
 #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
@@ -276,38 +284,6 @@ impl Mul<CSSFloat> for NoCalcLength {
 }
 
 impl NoCalcLength {
-    /// https://drafts.csswg.org/css-fonts-3/#font-size-prop
-    pub fn from_str(s: &str) -> Option<NoCalcLength> {
-        Some(match_ignore_ascii_case! { s,
-            "xx-small" => NoCalcLength::Absolute(Au::from_px(FONT_MEDIUM_PX) * 3 / 5),
-            "x-small" => NoCalcLength::Absolute(Au::from_px(FONT_MEDIUM_PX) * 3 / 4),
-            "small" => NoCalcLength::Absolute(Au::from_px(FONT_MEDIUM_PX) * 8 / 9),
-            "medium" => NoCalcLength::Absolute(Au::from_px(FONT_MEDIUM_PX)),
-            "large" => NoCalcLength::Absolute(Au::from_px(FONT_MEDIUM_PX) * 6 / 5),
-            "x-large" => NoCalcLength::Absolute(Au::from_px(FONT_MEDIUM_PX) * 3 / 2),
-            "xx-large" => NoCalcLength::Absolute(Au::from_px(FONT_MEDIUM_PX) * 2),
-
-            // https://github.com/servo/servo/issues/3423#issuecomment-56321664
-            "smaller" => NoCalcLength::FontRelative(FontRelativeLength::Em(0.85)),
-            "larger" => NoCalcLength::FontRelative(FontRelativeLength::Em(1.2)),
-            _ => return None
-        })
-    }
-
-    /// https://drafts.csswg.org/css-fonts-3/#font-size-prop
-    pub fn from_font_size_int(i: u8) -> Self {
-        let au = match i {
-            0 | 1 => Au::from_px(FONT_MEDIUM_PX) * 3 / 4,
-            2 => Au::from_px(FONT_MEDIUM_PX) * 8 / 9,
-            3 => Au::from_px(FONT_MEDIUM_PX),
-            4 => Au::from_px(FONT_MEDIUM_PX) * 6 / 5,
-            5 => Au::from_px(FONT_MEDIUM_PX) * 3 / 2,
-            6 => Au::from_px(FONT_MEDIUM_PX) * 2,
-            _ => Au::from_px(FONT_MEDIUM_PX) * 3,
-        };
-        NoCalcLength::Absolute(au)
-    }
-
     /// Parse a given absolute or relative dimension.
     pub fn parse_dimension(value: CSSFloat, unit: &str) -> Result<NoCalcLength, ()> {
         match_ignore_ascii_case! { unit,
@@ -369,9 +345,6 @@ pub enum Length {
     /// A calc expression.
     ///
     /// https://drafts.csswg.org/css-values/#calc-notation
-    ///
-    /// TODO(emilio): We have more `Calc` variants around, we should only use
-    /// one.
     Calc(Box<CalcLengthOrPercentage>, AllowedNumericType),
 }
 
@@ -447,19 +420,9 @@ impl Length {
         Length::NoCalc(NoCalcLength::zero())
     }
 
-    /// https://drafts.csswg.org/css-fonts-3/#font-size-prop
-    pub fn from_str(s: &str) -> Option<Length> {
-        NoCalcLength::from_str(s).map(Length::NoCalc)
-    }
-
     /// Parse a given absolute or relative dimension.
     pub fn parse_dimension(value: CSSFloat, unit: &str) -> Result<Length, ()> {
         NoCalcLength::parse_dimension(value, unit).map(Length::NoCalc)
-    }
-
-    /// https://drafts.csswg.org/css-fonts-3/#font-size-prop
-    pub fn from_font_size_int(i: u8) -> Self {
-        Length::NoCalc(NoCalcLength::from_font_size_int(i))
     }
 
     #[inline]
@@ -479,7 +442,7 @@ impl Length {
     /// Parse a non-negative length
     #[inline]
     pub fn parse_non_negative(input: &mut Parser) -> Result<Length, ()> {
-        Length::parse_internal(input, AllowedNumericType::NonNegative)
+        Self::parse_internal(input, AllowedNumericType::NonNegative)
     }
 
     /// Get an absolute length from a px value.
@@ -499,7 +462,18 @@ impl Length {
 
 impl Parse for Length {
     fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
-        Length::parse_internal(input, AllowedNumericType::All)
+        Self::parse_internal(input, AllowedNumericType::All)
+    }
+}
+
+impl Either<Length, None_> {
+    /// Parse a non-negative length or none
+    #[inline]
+    pub fn parse_non_negative_length(context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
+        if input.try(|input| None_::parse(context, input)).is_ok() {
+            return Ok(Either::Second(None_));
+        }
+        Length::parse_non_negative(input).map(Either::First)
     }
 }
 
@@ -544,8 +518,8 @@ pub struct CalcProductNode {
 #[allow(missing_docs)]
 pub enum CalcValueNode {
     Length(NoCalcLength),
-    Angle(Angle),
-    Time(Time),
+    Angle(CSSFloat),
+    Time(CSSFloat),
     Percentage(CSSFloat),
     Number(CSSFloat),
     Sum(Box<CalcSumNode>),
@@ -584,20 +558,33 @@ impl CalcLengthOrPercentage {
         let mut products = Vec::new();
         products.push(try!(CalcLengthOrPercentage::parse_product(input, expected_unit)));
 
-        while let Ok(token) = input.next() {
-            match token {
-                Token::Delim('+') => {
-                    products.push(try!(CalcLengthOrPercentage::parse_product(input, expected_unit)));
+        loop {
+            let position = input.position();
+            match input.next_including_whitespace() {
+                Ok(Token::WhiteSpace(_)) => {
+                    if input.is_exhausted() {
+                        break; // allow trailing whitespace
+                    }
+                    match input.next() {
+                        Ok(Token::Delim('+')) => {
+                            products.push(try!(CalcLengthOrPercentage::parse_product(input, expected_unit)));
+                        }
+                        Ok(Token::Delim('-')) => {
+                            let mut right = try!(CalcLengthOrPercentage::parse_product(input, expected_unit));
+                            right.values.push(CalcValueNode::Number(-1.));
+                            products.push(right);
+                        }
+                        _ => {
+                            return Err(());
+                        }
+                    }
                 }
-                Token::Delim('-') => {
-                    let mut right = try!(CalcLengthOrPercentage::parse_product(input, expected_unit));
-                    right.values.push(CalcValueNode::Number(-1.));
-                    products.push(right);
+                _ => {
+                    input.reset(position);
+                    break
                 }
-                _ => return Err(())
             }
         }
-
         Ok(CalcSumNode { products: products })
     }
 
@@ -639,10 +626,14 @@ impl CalcLengthOrPercentage {
                 NoCalcLength::parse_dimension(value.value, unit).map(CalcValueNode::Length)
             }
             (Token::Dimension(ref value, ref unit), CalcUnit::Angle) => {
-                Angle::parse_dimension(value.value, unit).map(CalcValueNode::Angle)
+                Angle::parse_dimension(value.value, unit).map(|angle| {
+                    CalcValueNode::Angle(angle.radians())
+                })
             }
             (Token::Dimension(ref value, ref unit), CalcUnit::Time) => {
-                Time::parse_dimension(value.value, unit).map(CalcValueNode::Time)
+                Time::parse_dimension(value.value, unit).map(|time| {
+                    CalcValueNode::Time(time.seconds())
+                })
             }
             (Token::Percentage(ref value), CalcUnit::LengthOrPercentage) =>
                 Ok(CalcValueNode::Percentage(value.unit_value)),
@@ -826,14 +817,14 @@ impl CalcLengthOrPercentage {
 
         for value in simplified {
             match value {
-                SimplifiedValueNode::Time(Time(val)) =>
+                SimplifiedValueNode::Time(val) =>
                     time = Some(time.unwrap_or(0.) + val),
                 _ => return Err(()),
             }
         }
 
         match time {
-            Some(time) => Ok(Time(time)),
+            Some(time) => Ok(Time::from_calc(time)),
             _ => Err(())
         }
     }
@@ -855,16 +846,23 @@ impl CalcLengthOrPercentage {
 
         for value in simplified {
             match value {
-                SimplifiedValueNode::Angle(Angle(val)) =>
-                    angle = Some(angle.unwrap_or(0.) + val),
-                SimplifiedValueNode::Number(val) => number = Some(number.unwrap_or(0.) + val),
+                SimplifiedValueNode::Angle(val) => {
+                    angle = Some(angle.unwrap_or(0.) + val)
+                }
+                // TODO(emilio): This `Number` logic looks fishy.
+                //
+                // In particular, this allows calc(2 - 2) to parse as an
+                // `Angle`, which doesn't seem desired to me.
+                SimplifiedValueNode::Number(val) => {
+                    number = Some(number.unwrap_or(0.) + val)
+                }
                 _ => unreachable!()
             }
         }
 
         match (angle, number) {
-            (Some(angle), None) => Ok(Angle(angle)),
-            (None, Some(value)) if value == 0. => Ok(Angle(0.)),
+            (Some(angle), None) => Ok(Angle::from_calc(angle)),
+            (None, Some(value)) if value == 0. => Ok(Angle::from_calc(0.)),
             _ => Err(())
         }
     }
@@ -923,27 +921,52 @@ impl ToCss for CalcLengthOrPercentage {
 /// A percentage value.
 ///
 /// [0 .. 100%] maps to [0.0 .. 1.0]
+///
+/// FIXME(emilio): There's no standard property that requires a `<percentage>`
+/// without requiring also a `<length>`. If such a property existed, we'd need
+/// to add special handling for `calc()` and percentages in here in the same way
+/// as for `Angle` and `Time`, but the lack of this this is otherwise
+/// undistinguishable (we handle it correctly from `CalcLengthOrPercentage`).
+///
+/// As of today, only `-moz-image-rect` supports percentages without length.
+/// This is not a regression, and that's a non-standard extension anyway, so I'm
+/// not implementing it for now.
 #[derive(Clone, PartialEq, Copy, Debug)]
 #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
 pub struct Percentage(pub CSSFloat);
 
 impl ToCss for Percentage {
-    fn to_css<W>(&self, dest: &mut W) -> fmt::Result where W: fmt::Write {
+    fn to_css<W>(&self, dest: &mut W) -> fmt::Result
+        where W: fmt::Write,
+    {
         write!(dest, "{}%", self.0 * 100.)
+    }
+}
+
+impl Percentage {
+    fn parse_internal(input: &mut Parser, context: AllowedNumericType) -> Result<Self, ()> {
+        match try!(input.next()) {
+            Token::Percentage(ref value) if context.is_ok(value.unit_value) => {
+                Ok(Percentage(value.unit_value))
+            }
+            _ => Err(())
+        }
+    }
+
+    /// Parses a percentage token, but rejects it if it's negative.
+    pub fn parse_non_negative(input: &mut Parser) -> Result<Self, ()> {
+        Self::parse_internal(input, AllowedNumericType::NonNegative)
     }
 }
 
 impl Parse for Percentage {
     #[inline]
     fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
-        let context = AllowedNumericType::All;
-        match try!(input.next()) {
-            Token::Percentage(ref value) if context.is_ok(value.unit_value) =>
-                Ok(Percentage(value.unit_value)),
-            _ => Err(())
-        }
+        Self::parse_internal(input, AllowedNumericType::All)
     }
 }
+
+impl ComputedValueAsSpecified for Percentage {}
 
 /// A length or a percentage value.
 ///
@@ -1026,7 +1049,7 @@ impl LengthOrPercentage {
     /// Parse a non-negative length.
     #[inline]
     pub fn parse_non_negative(input: &mut Parser) -> Result<LengthOrPercentage, ()> {
-        LengthOrPercentage::parse_internal(input, AllowedNumericType::NonNegative)
+        Self::parse_internal(input, AllowedNumericType::NonNegative)
     }
 
     /// Parse a length, treating dimensionless numbers as pixels
@@ -1034,11 +1057,13 @@ impl LengthOrPercentage {
     /// https://www.w3.org/TR/SVG2/types.html#presentation-attribute-css-value
     pub fn parse_numbers_are_pixels(input: &mut Parser) -> Result<LengthOrPercentage, ()> {
         if let Ok(lop) = input.try(|i| Self::parse_internal(i, AllowedNumericType::All)) {
-            Ok(lop)
-        } else {
-            let num = input.expect_number()?;
-            Ok(LengthOrPercentage::Length(NoCalcLength::Absolute(Au((AU_PER_PX * num) as i32))))
+            return Ok(lop)
         }
+
+        // TODO(emilio): Probably should use Number::parse_non_negative to
+        // handle calc()?
+        let num = input.expect_number()?;
+        Ok(LengthOrPercentage::Length(NoCalcLength::Absolute(Au((AU_PER_PX * num) as i32))))
     }
 
     /// Parse a non-negative length, treating dimensionless numbers as pixels
@@ -1046,14 +1071,16 @@ impl LengthOrPercentage {
     /// This is nonstandard behavior used by Firefox for SVG
     pub fn parse_numbers_are_pixels_non_negative(input: &mut Parser) -> Result<LengthOrPercentage, ()> {
         if let Ok(lop) = input.try(|i| Self::parse_internal(i, AllowedNumericType::NonNegative)) {
-            Ok(lop)
+            return Ok(lop)
+        }
+
+        // TODO(emilio): Probably should use Number::parse_non_negative to
+        // handle calc()?
+        let num = input.expect_number()?;
+        if num >= 0. {
+            Ok(LengthOrPercentage::Length(NoCalcLength::Absolute(Au((AU_PER_PX * num) as i32))))
         } else {
-            let num = input.expect_number()?;
-            if num >= 0. {
-                Ok(LengthOrPercentage::Length(NoCalcLength::Absolute(Au((AU_PER_PX * num) as i32))))
-            } else {
-                Err(())
-            }
+            Err(())
         }
     }
 
@@ -1069,7 +1096,7 @@ impl LengthOrPercentage {
 impl Parse for LengthOrPercentage {
     #[inline]
     fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
-        LengthOrPercentage::parse_internal(input, AllowedNumericType::All)
+        Self::parse_internal(input, AllowedNumericType::All)
     }
 }
 
@@ -1123,15 +1150,14 @@ impl ToCss for LengthOrPercentageOrAuto {
 
 impl LengthOrPercentageOrAuto {
     fn parse_internal(input: &mut Parser, context: AllowedNumericType)
-                      -> Result<LengthOrPercentageOrAuto, ()>
-    {
+                      -> Result<Self, ()> {
         match try!(input.next()) {
             Token::Dimension(ref value, ref unit) if context.is_ok(value.value) =>
                 NoCalcLength::parse_dimension(value.value, unit).map(LengthOrPercentageOrAuto::Length),
             Token::Percentage(ref value) if context.is_ok(value.unit_value) =>
                 Ok(LengthOrPercentageOrAuto::Percentage(Percentage(value.unit_value))),
             Token::Number(ref value) if value.value == 0. =>
-                Ok(LengthOrPercentageOrAuto::Length(NoCalcLength::zero())),
+                Ok(Self::zero()),
             Token::Ident(ref value) if value.eq_ignore_ascii_case("auto") =>
                 Ok(LengthOrPercentageOrAuto::Auto),
             Token::Function(ref name) if name.eq_ignore_ascii_case("calc") => {
@@ -1145,14 +1171,24 @@ impl LengthOrPercentageOrAuto {
     /// Parse a non-negative length, percentage, or auto.
     #[inline]
     pub fn parse_non_negative(input: &mut Parser) -> Result<LengthOrPercentageOrAuto, ()> {
-        LengthOrPercentageOrAuto::parse_internal(input, AllowedNumericType::NonNegative)
+        Self::parse_internal(input, AllowedNumericType::NonNegative)
+    }
+
+    /// Returns the `auto` value.
+    pub fn auto() -> Self {
+        LengthOrPercentageOrAuto::Auto
+    }
+
+    /// Returns a value representing a `0` length.
+    pub fn zero() -> Self {
+        LengthOrPercentageOrAuto::Length(NoCalcLength::zero())
     }
 }
 
 impl Parse for LengthOrPercentageOrAuto {
     #[inline]
     fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
-        LengthOrPercentageOrAuto::parse_internal(input, AllowedNumericType::All)
+        Self::parse_internal(input, AllowedNumericType::All)
     }
 }
 
@@ -1210,15 +1246,15 @@ impl LengthOrPercentageOrNone {
     }
     /// Parse a non-negative LengthOrPercentageOrNone.
     #[inline]
-    pub fn parse_non_negative(input: &mut Parser) -> Result<LengthOrPercentageOrNone, ()> {
-        LengthOrPercentageOrNone::parse_internal(input, AllowedNumericType::NonNegative)
+    pub fn parse_non_negative(input: &mut Parser) -> Result<Self, ()> {
+        Self::parse_internal(input, AllowedNumericType::NonNegative)
     }
 }
 
 impl Parse for LengthOrPercentageOrNone {
     #[inline]
     fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
-        LengthOrPercentageOrNone::parse_internal(input, AllowedNumericType::All)
+        Self::parse_internal(input, AllowedNumericType::All)
     }
 }
 
@@ -1250,6 +1286,40 @@ pub enum LengthOrPercentageOrAutoOrContent {
     Content
 }
 
+impl LengthOrPercentageOrAutoOrContent {
+    /// Parse a non-negative LengthOrPercentageOrAutoOrContent.
+    pub fn parse_non_negative(input: &mut Parser) -> Result<Self, ()> {
+        let context = AllowedNumericType::NonNegative;
+        match try!(input.next()) {
+            Token::Dimension(ref value, ref unit) if context.is_ok(value.value) =>
+                NoCalcLength::parse_dimension(value.value, unit).map(LengthOrPercentageOrAutoOrContent::Length),
+            Token::Percentage(ref value) if context.is_ok(value.unit_value) =>
+                Ok(LengthOrPercentageOrAutoOrContent::Percentage(Percentage(value.unit_value))),
+            Token::Number(ref value) if value.value == 0. =>
+                Ok(Self::zero()),
+            Token::Ident(ref value) if value.eq_ignore_ascii_case("auto") =>
+                Ok(LengthOrPercentageOrAutoOrContent::Auto),
+            Token::Ident(ref value) if value.eq_ignore_ascii_case("content") =>
+                Ok(LengthOrPercentageOrAutoOrContent::Content),
+            Token::Function(ref name) if name.eq_ignore_ascii_case("calc") => {
+                let calc = try!(input.parse_nested_block(CalcLengthOrPercentage::parse_length_or_percentage));
+                Ok(LengthOrPercentageOrAutoOrContent::Calc(Box::new(calc)))
+            },
+            _ => Err(())
+        }
+    }
+
+    /// Returns the `auto` value.
+    pub fn auto() -> Self {
+        LengthOrPercentageOrAutoOrContent::Auto
+    }
+
+    /// Returns a value representing a `0` length.
+    pub fn zero() -> Self {
+        LengthOrPercentageOrAutoOrContent::Length(NoCalcLength::zero())
+    }
+}
+
 impl HasViewportPercentage for LengthOrPercentageOrAutoOrContent {
     fn has_viewport_percentage(&self) -> bool {
         match *self {
@@ -1272,43 +1342,20 @@ impl ToCss for LengthOrPercentageOrAutoOrContent {
     }
 }
 
-impl Parse for LengthOrPercentageOrAutoOrContent {
-    fn parse(_context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
-        let context = AllowedNumericType::NonNegative;
-        match try!(input.next()) {
-            Token::Dimension(ref value, ref unit) if context.is_ok(value.value) =>
-                NoCalcLength::parse_dimension(value.value, unit).map(LengthOrPercentageOrAutoOrContent::Length),
-            Token::Percentage(ref value) if context.is_ok(value.unit_value) =>
-                Ok(LengthOrPercentageOrAutoOrContent::Percentage(Percentage(value.unit_value))),
-            Token::Number(ref value) if value.value == 0. =>
-                Ok(LengthOrPercentageOrAutoOrContent::Length(NoCalcLength::zero())),
-            Token::Ident(ref value) if value.eq_ignore_ascii_case("auto") =>
-                Ok(LengthOrPercentageOrAutoOrContent::Auto),
-            Token::Ident(ref value) if value.eq_ignore_ascii_case("content") =>
-                Ok(LengthOrPercentageOrAutoOrContent::Content),
-            Token::Function(ref name) if name.eq_ignore_ascii_case("calc") => {
-                let calc = try!(input.parse_nested_block(CalcLengthOrPercentage::parse_length_or_percentage));
-                Ok(LengthOrPercentageOrAutoOrContent::Calc(Box::new(calc)))
-            },
-            _ => Err(())
-        }
-    }
-}
-
 /// Either a `<length>` or a `<number>`.
 pub type LengthOrNumber = Either<Length, Number>;
 
 impl LengthOrNumber {
     /// Parse a non-negative LengthOrNumber.
-    pub fn parse_non_negative(_context: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
-        // We try to parse as a Number first because, for cases like LengthOrNumber,
-        // we want "0" to be parsed as a plain Number rather than a Length (0px); this
-        // matches the behaviour of all major browsers
+    pub fn parse_non_negative(_: &ParserContext, input: &mut Parser) -> Result<Self, ()> {
+        // We try to parse as a Number first because, for cases like
+        // LengthOrNumber, we want "0" to be parsed as a plain Number rather
+        // than a Length (0px); this matches the behaviour of all major browsers
         if let Ok(v) = input.try(Number::parse_non_negative) {
-            Ok(Either::Second(v))
-        } else {
-            Length::parse_non_negative(input).map(Either::First)
+            return Ok(Either::Second(v))
         }
+
+        Length::parse_non_negative(input).map(Either::First)
     }
 }
 

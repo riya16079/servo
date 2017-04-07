@@ -7,14 +7,17 @@
 use compositor_thread::{CompositorProxy, CompositorReceiver};
 use euclid::{Point2D, Size2D};
 use euclid::point::TypedPoint2D;
+use euclid::rect::TypedRect;
 use euclid::scale_factor::ScaleFactor;
 use euclid::size::TypedSize2D;
+use gleam::gl;
 use msg::constellation_msg::{Key, KeyModifiers, KeyState};
 use net_traits::net_error_list::NetError;
 use script_traits::{DevicePixel, MouseButton, TouchEventType, TouchId, TouchpadPressurePhase};
 use servo_geometry::DeviceIndependentPixel;
 use servo_url::ServoUrl;
 use std::fmt::{Debug, Error, Formatter};
+use std::rc::Rc;
 use style_traits::cursor::Cursor;
 use webrender_traits::ScrollLocation;
 
@@ -106,8 +109,10 @@ impl Debug for WindowEvent {
 }
 
 pub trait WindowMethods {
-    /// Returns the size of the window in hardware pixels.
+    /// Returns the rendering area size in hardware pixels.
     fn framebuffer_size(&self) -> TypedSize2D<u32, DevicePixel>;
+    /// Returns the position and size of the window within the rendering area.
+    fn window_rect(&self) -> TypedRect<u32, DevicePixel>;
     /// Returns the size of the window in density-independent "px" units.
     fn size(&self) -> TypedSize2D<f32, DeviceIndependentPixel>;
     /// Presents the window to the screen (perhaps by page flipping).
@@ -134,6 +139,8 @@ pub trait WindowMethods {
     fn load_end(&self, back: bool, forward: bool, root: bool);
     /// Called when the browser encounters an error while loading a URL
     fn load_error(&self, code: NetError, url: String);
+    /// Wether or not to follow a link
+    fn allow_navigation(&self, url: ServoUrl) -> bool;
     /// Called when the <head> tag has finished parsing
     fn head_parsed(&self);
 
@@ -163,4 +170,7 @@ pub trait WindowMethods {
 
     /// Add a favicon
     fn set_favicon(&self, url: ServoUrl);
+
+    /// Return the GL function pointer trait.
+    fn gl(&self) -> Rc<gl::Gl>;
 }
